@@ -1,0 +1,456 @@
+const $ = (sel, el = document) => el.querySelector(sel);
+const app = $("#app");
+
+const state = {
+  user: null,
+  tab: "overview",
+  meta: { referralUrl: "https://vm.massedcompute.com/signup?referral=a6Cjx5Rdeg", mock: true },
+  inventory: { gpus: [], images: [] },
+  instances: [],
+  usage: [],
+  keys: [],
+  adminUsers: [],
+  adminDetail: null,
+  fleet: [],
+  flash: "",
+  secret: "",
+};
+
+async function api(path, opts = {}) {
+  const res = await fetch(path, {
+    credentials: "include",
+    headers: { "Content-Type": "application/json", ...(opts.headers || {}) },
+    ...opts,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error || res.statusText);
+  return data;
+}
+
+function money(cents) {
+  return `$${(cents / 100).toFixed(2)}`;
+}
+
+function fmt(ts) {
+  if (!ts) return "—";
+  return new Date(ts).toLocaleString();
+}
+
+function render() {
+  if (!state.user) return renderAuth();
+  app.innerHTML = `
+    <div class="wrap">
+      <header class="top">
+        <div class="brand">RACKLINE <small>GPU proxy · Massed Compute</small></div>
+        <nav class="nav">
+          ${tabBtn("overview", "Overview")}
+          ${tabBtn("machines", "Machines")}
+          ${tabBtn("catalog", "Catalog")}
+          ${tabBtn("keys", "Agent keys")}
+          ${state.user.role === "admin" ? tabBtn("admin", "Admin") : ""}
+          <button class="ghost" id="logout">Sign out</button>
+        </nav>
+      </header>
+      ${state.flash ? `<div class="flash">${esc(state.flash)}</div>` : ""}
+      ${state.secret ? `<div class="ok secret">New key (copy now, shown once): ${esc(state.secret)}</div>` : ""}
+      ${view()}
+      <footer class="foot">
+        Need a Massed Compute account for the upstream bill?
+        <a href="${esc(state.meta.referralUrl)}" target="_blank" rel="noreferrer">Sign up with this referral</a>.
+        ${state.meta.mock ? " · Mock inventory (no live Massed key)." : ""}
+      </footer>
+    </div>
+  `;
+  $("#logout")?.addEventListener("click", async () => {
+    await api("/api/auth/logout", { method: "POST" });
+    state.user = null;
+    render();
+  });
+  for (const b of document.querySelectorAll(".nav [data-tab]")) {
+    b.addEventListener("click", () => {
+      state.tab = b.dataset.tab;
+      state.flash = "";
+      loadTab();
+    });
+  }
+  bindView();
+}
+
+function tabBtn(id, label) {
+  return `<button data-tab="${id}" class="${state.tab === id ? "active" : ""}">${label}</button>`;
+}
+
+function renderAuth() {
+  app.innerHTML = `
+    <div class="auth">
+      <div class="brand">RACKLINE</div>
+      <h1>Sign in</h1>
+      <p class="lead">Email + password, hosted on Cloudflare. First account becomes admin.</p>
+      ${state.flash ? `<div class="flash">${esc(state.flash)}</div>` : ""}
+      <form id="auth-form">
+        <label>Email</label>
+        <input name="email" type="email" required autocomplete="username" />
+        <label>Password</label>
+        <input name="password" type="password" required minlength="8" autocomplete="current-password" />
+        <div class="row" style="margin-top:16px">
+          <button class="primary" type="submit" data-mode="login">Log in</button>
+          <button class="ghost" type="submit" data-mode="register">Create account</button>
+        </div>
+      </form>
+      <p class="lead" style="margin-top:18px">GPU VMs are billed against your Rackline credit. Upstream capacity is Massed Compute.</p>
+      <a href="${esc(state.meta.referralUrl)}" target="_blank" rel="noreferrer">Massed Compute referral signup</a>
+    </div>
+  `;
+  const form = $("#auth-form");
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const mode = e.submitter?.dataset.mode || "login";
+    const fd = new FormData(form);
+    try {
+      const data = await api(mode === "register" ? "/api/auth/register" : "/api/auth/login", {
+        method: "POST",
+        body: JSON.stringify({ email: fd.get("email"), password: fd.get("password") }),
+      });
+      state.user = data.user;
+      state.flash = "";
+      state.tab = "overview";
+      await loadTab();
+    } catch (err) {
+      state.flash = err.message;
+      renderAuth();
+    }
+  });
+}
+
+function view() {
+  if (state.tab === "overview") {
+    return `
+      <h1>${esc(state.user.email)}</h1>
+      <div class="grid stats">
+        <div class="card"><div class="k">Credit left</div><div class="v">${money(state.user.credit_cents)}</div></div>
+        <div class="card"><div class="k">Spent</div><div class="v">${money(state.user.spent_cents)}</div></div>
+        <div class="card"><div class="k">Role</div><div class="v">${esc(state.user.role)}</div><div class="s">max ${state.user.max_concurrent} concurrent</div></div>
+        <div class="card"><div class="k">Allowed GPUs</div><div class="v" style="font-size:14px">${esc(state.user.allowed_gpus.join(", ") || "none")}</div></div>
+      </div>
+      <div class="card" style="margin-top:16px">
+        <h2>Recent usage</h2>
+        ${usageTable(state.usage)}
+      </div>
+    `;
+  }
+  if (state.tab === "machines") {
+    return `
+      <h1>Machines</h1>
+      <div class="card">${instanceTable(state.instances, true)}</div>
+    `;
+  }
+  if (state.tab === "catalog") {
+    const images = state.inventory.images || [];
+    return `
+      <h1>Catalog</h1>
+      <p class="lead">Only SKUs on your allowlist are shown. Launch spends your credit; terminate destroys the disk.</p>
+      <div class="card">
+        <table>
+          <thead><tr><th>SKU</th><th>Specs</th><th>$/hr</th><th>Stock</th><th></th></tr></thead>
+          <tbody>
+            ${(state.inventory.gpus || []).map((g) => `
+              <tr>
+                <td class="mono">${esc(g.productName)}<div class="s">${esc(g.description)}</div></td>
+                <td>${g.vcpu} vCPU · ${g.ramGib} GiB · ${g.storageGb} GB</td>
+                <td class="mono">${money(g.priceCentsPerHour)}</td>
+                <td>${g.capacity}</td>
+                <td>
+                  <button class="primary slim" data-launch="${esc(g.productName)}">Launch</button>
+                </td>
+              </tr>`).join("") || `<tr><td colspan="5">No GPUs assigned. Ask an admin.</td></tr>`}
+          </tbody>
+        </table>
+        <label>Image</label>
+        <select id="image-id">
+          ${images.map((i) => `<option value="${i.vm_image_id}">${esc(i.vm_image_name)} (${i.vm_image_id})</option>`).join("")}
+        </select>
+      </div>
+    `;
+  }
+  if (state.tab === "keys") {
+    return `
+      <h1>Agent keys</h1>
+      <p class="lead">Give this to your coding agent. It never talks to Massed Compute — only to this proxy, under your budget and GPU allowlist.</p>
+      <div class="card">
+        <form id="key-form" class="row">
+          <input name="name" placeholder="key name, e.g. claude" required />
+          <button class="primary slim" type="submit">Create key</button>
+        </form>
+        <table style="margin-top:16px">
+          <thead><tr><th>Name</th><th>Prefix</th><th>Created</th><th>Last used</th><th></th></tr></thead>
+          <tbody>
+            ${state.keys.map((k) => `
+              <tr>
+                <td>${esc(k.name)}</td>
+                <td class="mono">${esc(k.key_prefix)}…</td>
+                <td class="mono">${esc(fmt(k.created_at))}</td>
+                <td class="mono">${esc(fmt(k.last_used_at))}</td>
+                <td><button class="linkish danger" data-del-key="${k.id}">revoke</button></td>
+              </tr>`).join("") || `<tr><td colspan="5">No keys yet.</td></tr>`}
+          </tbody>
+        </table>
+      </div>
+      <div class="card" style="margin-top:16px">
+        <h2>Copy-skill snippet</h2>
+        <pre>GPU_PROXY_URL=${location.origin}
+GPU_PROXY_API_KEY=gpk_…</pre>
+        <p class="lead">Skill file: <a href="/skill.md">/skill.md</a></p>
+      </div>
+    `;
+  }
+  if (state.tab === "admin") {
+    return renderAdmin();
+  }
+  return "";
+}
+
+function renderAdmin() {
+  const d = state.adminDetail;
+  return `
+    <h1>Admin</h1>
+    <p class="lead">Promote admins, set each user’s GPU allowlist, credit, and concurrent cap. Usage is timestamped per VM.</p>
+    <div class="split">
+      <div class="card">
+        <h2>Users</h2>
+        <table>
+          <thead><tr><th>Email</th><th>Role</th><th>Credit</th><th>Running</th></tr></thead>
+          <tbody>
+            ${state.adminUsers.map((u) => `
+              <tr class="user-row" data-user="${u.id}">
+                <td>${esc(u.email)}</td>
+                <td><span class="pill ${u.role === "admin" ? "admin" : ""}">${esc(u.role)}</span></td>
+                <td class="mono">${money(u.credit_cents)}</td>
+                <td>${u.running ?? 0} / ${u.max_concurrent}</td>
+              </tr>`).join("")}
+          </tbody>
+        </table>
+      </div>
+      <div class="card">
+        ${d ? adminDetailHtml(d) : "<p class='lead'>Select a user.</p>"}
+      </div>
+    </div>
+    <div class="card" style="margin-top:16px">
+      <h2>Fleet</h2>
+      ${instanceTable(state.fleet, false, true)}
+    </div>
+  `;
+}
+
+function adminDetailHtml(d) {
+  const u = d.user;
+  const gpus = state.inventory.gpus || [];
+  const allowed = new Set(u.allowed_gpus);
+  const all = allowed.has("*");
+  return `
+    <h2>${esc(u.email)}</h2>
+    <form id="admin-user">
+      <label>Role</label>
+      <select name="role">
+        <option value="user" ${u.role === "user" ? "selected" : ""}>user</option>
+        <option value="admin" ${u.role === "admin" ? "selected" : ""}>admin</option>
+      </select>
+      <label>Credit (cents)</label>
+      <input name="credit_cents" type="number" min="0" value="${u.credit_cents}" />
+      <label>Max concurrent VMs</label>
+      <input name="max_concurrent" type="number" min="0" max="32" value="${u.max_concurrent}" />
+      <label>Allowed GPUs</label>
+      <div class="checks">
+        <label><input type="checkbox" name="gpu" value="*" ${all ? "checked" : ""} /> * all SKUs</label>
+        ${gpus.map((g) => `<label><input type="checkbox" name="gpu" value="${esc(g.productName)}" ${!all && allowed.has(g.productName) ? "checked" : ""} /> ${esc(g.productName)}</label>`).join("")}
+      </div>
+      <button class="primary slim" type="submit">Save permissions</button>
+    </form>
+    <h2 style="margin-top:24px">VMs</h2>
+    ${instanceTable(d.instances || [], false)}
+    <h2 style="margin-top:24px">Usage</h2>
+    ${usageTable(d.usage || [])}
+  `;
+}
+
+function instanceTable(rows, actions, showEmail = false) {
+  if (!rows?.length) return `<p class="lead">None.</p>`;
+  return `
+    <table>
+      <thead><tr>
+        ${showEmail ? "<th>User</th>" : ""}
+        <th>Name</th><th>SKU</th><th>Status</th><th>$/hr</th><th>Launched</th><th>Terminated</th>
+        ${actions ? "<th></th>" : ""}
+      </tr></thead>
+      <tbody>
+        ${rows.map((r) => `
+          <tr>
+            ${showEmail ? `<td>${esc(r.email || "")}</td>` : ""}
+            <td class="mono">${esc(r.name)}<div class="s">${esc(r.ip || "")}</div></td>
+            <td class="mono">${esc(r.product_name)}</td>
+            <td><span class="pill ${r.status === "running" || r.status === "launching" ? "run" : "off"}">${esc(r.status)}</span></td>
+            <td class="mono">${money(r.price_cents_per_hour)}</td>
+            <td class="mono">${esc(fmt(r.launched_at))}</td>
+            <td class="mono">${esc(fmt(r.terminated_at))}</td>
+            ${actions ? `<td>${
+              r.status === "terminated"
+                ? ""
+                : `<button class="linkish" data-restart="${r.id}">restart</button>
+                   <button class="linkish danger" data-kill="${r.id}">terminate</button>`
+            }</td>` : ""}
+          </tr>`).join("")}
+      </tbody>
+    </table>
+  `;
+}
+
+function usageTable(rows) {
+  if (!rows?.length) return `<p class="lead">No usage events yet.</p>`;
+  return `
+    <table>
+      <thead><tr><th>When</th><th>VM</th><th>SKU</th><th>Hours</th><th>Amount</th></tr></thead>
+      <tbody>
+        ${rows.map((e) => `
+          <tr>
+            <td class="mono">${esc(fmt(e.created_at))}</td>
+            <td class="mono">${esc(e.instance_name || e.instance_id || "")}</td>
+            <td class="mono">${esc(e.product_name || "")}</td>
+            <td class="mono">${Number(e.hours || 0).toFixed(3)}</td>
+            <td class="mono">${money(e.cents)}</td>
+          </tr>`).join("")}
+      </tbody>
+    </table>
+  `;
+}
+
+function bindView() {
+  $("#key-form")?.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const name = new FormData(e.target).get("name");
+    try {
+      const data = await api("/api/keys", { method: "POST", body: JSON.stringify({ name }) });
+      state.secret = data.key.token;
+      await loadTab();
+    } catch (err) {
+      state.flash = err.message;
+      render();
+    }
+  });
+  for (const b of document.querySelectorAll("[data-del-key]")) {
+    b.addEventListener("click", async () => {
+      await api(`/api/keys/${b.dataset.delKey}`, { method: "DELETE" });
+      await loadTab();
+    });
+  }
+  for (const b of document.querySelectorAll("[data-launch]")) {
+    b.addEventListener("click", async () => {
+      const imageId = Number($("#image-id")?.value || 0) || undefined;
+      try {
+        await api("/api/instances", {
+          method: "POST",
+          body: JSON.stringify({ productName: b.dataset.launch, imageId }),
+        });
+        state.tab = "machines";
+        await loadTab();
+      } catch (err) {
+        state.flash = err.message;
+        render();
+      }
+    });
+  }
+  for (const b of document.querySelectorAll("[data-kill]")) {
+    b.addEventListener("click", async () => {
+      if (!confirm("Terminate destroys the disk. Continue?")) return;
+      await api(`/api/instances/${b.dataset.kill}/terminate`, { method: "POST" });
+      await loadTab();
+    });
+  }
+  for (const b of document.querySelectorAll("[data-restart]")) {
+    b.addEventListener("click", async () => {
+      await api(`/api/instances/${b.dataset.restart}/restart`, { method: "POST" });
+      await loadTab();
+    });
+  }
+  for (const row of document.querySelectorAll("[data-user]")) {
+    row.addEventListener("click", async () => {
+      state.adminDetail = await api(`/api/admin/users/${row.dataset.user}`);
+      render();
+    });
+  }
+  $("#admin-user")?.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const gpus = [...e.target.querySelectorAll("input[name=gpu]:checked")].map((i) => i.value);
+    try {
+      await api(`/api/admin/users/${state.adminDetail.user.id}`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          role: fd.get("role"),
+          credit_cents: Number(fd.get("credit_cents")),
+          max_concurrent: Number(fd.get("max_concurrent")),
+          allowed_gpus: gpus.includes("*") ? ["*"] : gpus,
+        }),
+      });
+      state.adminDetail = await api(`/api/admin/users/${state.adminDetail.user.id}`);
+      await loadTab();
+    } catch (err) {
+      state.flash = err.message;
+      render();
+    }
+  });
+}
+
+async function loadTab() {
+  try {
+    const me = await api("/api/me");
+    state.user = me.user;
+    if (state.tab === "overview") {
+      const u = await api("/api/usage");
+      state.usage = u.events;
+    } else if (state.tab === "machines") {
+      state.instances = (await api("/api/instances")).instances;
+    } else if (state.tab === "catalog") {
+      state.inventory = await api("/api/inventory");
+    } else if (state.tab === "keys") {
+      state.keys = (await api("/api/keys")).keys;
+    } else if (state.tab === "admin") {
+      const [users, fleet, inv] = await Promise.all([
+        api("/api/admin/users"),
+        api("/api/admin/fleet"),
+        api("/api/admin/catalog"),
+      ]);
+      state.adminUsers = users.users;
+      state.fleet = fleet.instances;
+      state.inventory = inv;
+    }
+  } catch (err) {
+    if (err.message === "Unauthorized") {
+      state.user = null;
+    } else {
+      state.flash = err.message;
+    }
+  }
+  render();
+}
+
+function esc(s) {
+  return String(s ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;");
+}
+
+async function boot() {
+  try {
+    state.meta = await api("/api/meta");
+  } catch { /* ignore */ }
+  try {
+    const me = await api("/api/me");
+    state.user = me.user;
+    await loadTab();
+  } catch {
+    renderAuth();
+  }
+}
+
+boot();

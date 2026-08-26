@@ -1,0 +1,6 @@
+# Copy to .dev.vars (never commit).
+MASSED_COMPUTE_API_KEY=
+SESSION_SECRET=change-me-to-a-long-random-string
+DATA_KEY=change-me-to-another-long-random-string
+ADMIN_EMAIL=you@example.com
+MOCK_MASSED=1
