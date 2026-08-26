@@ -94,7 +94,7 @@ export async function handleMcp(env: Env, request: Request, ctx: AuthContext): P
       return ok(id, {
         protocolVersion: "2024-11-05",
         capabilities: { tools: {} },
-        serverInfo: { name: "gpu-proxy", version: "1.0.0" },
+        serverInfo: { name: "mass-compute-management-ui", version: "1.0.0" },
       });
     }
     if (method === "notifications/initialized" || method === "ping") {

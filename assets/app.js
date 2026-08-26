@@ -41,7 +41,7 @@ function render() {
   app.innerHTML = `
     <div class="wrap">
       <header class="top">
-        <div class="brand">RACKLINE <small>GPU proxy · Massed Compute</small></div>
+        <div class="brand">MASS COMPUTE <small>Management UI</small></div>
         <nav class="nav">
           ${tabBtn("overview", "Overview")}
           ${tabBtn("machines", "Machines")}
@@ -83,7 +83,7 @@ function tabBtn(id, label) {
 function renderAuth() {
   app.innerHTML = `
     <div class="auth">
-      <div class="brand">RACKLINE</div>
+      <div class="brand">MASS COMPUTE <small>Management UI</small></div>
       <h1>Sign in</h1>
       <p class="lead">Email + password, hosted on Cloudflare. First account becomes admin.</p>
       ${state.flash ? `<div class="flash">${esc(state.flash)}</div>` : ""}
@@ -97,7 +97,7 @@ function renderAuth() {
           <button class="ghost" type="submit" data-mode="register">Create account</button>
         </div>
       </form>
-      <p class="lead" style="margin-top:18px">GPU VMs are billed against your Rackline credit. Upstream capacity is Massed Compute.</p>
+      <p class="lead" style="margin-top:18px">GPU VMs are billed against your credit. Upstream capacity is Massed Compute.</p>
       <a href="${esc(state.meta.referralUrl)}" target="_blank" rel="noreferrer">Massed Compute referral signup</a>
     </div>
   `;

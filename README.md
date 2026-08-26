@@ -1,4 +1,4 @@
-# Rackline — GPU proxy for Massed Compute
+# Mass Compute Management UI
 
 Cloudflare Worker that sits in front of a **single** Massed Compute account key and turns it into a multi-tenant GPU rental desk:
 
@@ -6,7 +6,7 @@ Cloudflare Worker that sits in front of a **single** Massed Compute account key 
 - Per-user **credit**, **GPU allowlist**, **concurrent cap**
 - Per-user **API keys** (`gpk_…`) for coding agents
 - Admin users who can promote other admins, edit permissions, and see each user’s VM history + timestamped usage
-- Hourly Massed bill stays on the operator; users spend Rackline credit
+- Hourly Massed bill stays on the operator; users spend account credit
 
 **Massed Compute signup (referral):** [https://vm.massedcompute.com/signup?referral=a6Cjx5Rdeg](https://vm.massedcompute.com/signup?referral=a6Cjx5Rdeg)
 

@@ -1,9 +1,9 @@
 ---
 name: gpu-proxy
-description: Provision and manage GPU VMs through the Rackline proxy (Massed Compute upstream). Use when the user wants a GPU VM, to list inventory, launch, restart, terminate, or check remaining credit. Requires GPU_PROXY_URL and GPU_PROXY_API_KEY.
+description: Provision and manage GPU VMs through Mass Compute Management UI (Massed Compute upstream). Use when the user wants a GPU VM, to list inventory, launch, restart, terminate, or check remaining credit. Requires GPU_PROXY_URL and GPU_PROXY_API_KEY.
 ---
 
-# Rackline GPU proxy
+# Mass Compute Management UI
 
 Do **not** call Massed Compute directly. This proxy enforces the user's budget, GPU allowlist, and concurrent cap.
 
