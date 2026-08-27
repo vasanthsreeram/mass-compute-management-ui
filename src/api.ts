@@ -91,8 +91,17 @@ export async function handleRequest(request: Request, env: Env, ctx: ExecutionCo
 
     if (path === "/api/me" && method === "GET") {
       const auth = await requireAuth(env, request);
-      const massed = auth.user.role === "admin" ? await getAccountSnapshot(env) : null;
-      return json({ user: auth.public, via: auth.via, massed });
+      return json({
+        user: auth.public,
+        via: auth.via,
+        mock: env.MOCK_MASSED === "1" || !env.MASSED_COMPUTE_API_KEY,
+      });
+    }
+
+    if (path === "/api/account" && method === "GET") {
+      const auth = await requireAuth(env, request);
+      if (auth.user.role !== "admin") return json({ massed: null });
+      return json({ massed: await getAccountSnapshot(env) });
     }
 
     if (path === "/api/inventory" && method === "GET") {

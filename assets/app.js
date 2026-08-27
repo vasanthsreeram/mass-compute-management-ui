@@ -43,8 +43,18 @@ function fmt(ts) {
   return new Date(ts).toLocaleString();
 }
 
+let fetchGen = 0;
+
 function render() {
   if (!state.user) return renderAuth();
+  ensureShell();
+  paintNav();
+  paintChrome();
+  paintView();
+}
+
+function ensureShell() {
+  if ($(".wrap") && $("#view")) return;
   app.innerHTML = `
     <div class="wrap">
       <header class="top">
@@ -58,25 +68,51 @@ function render() {
           <button class="ghost" id="logout">Sign out</button>
         </nav>
       </header>
-      ${state.flash ? `<div class="flash">${esc(state.flash)}</div>` : ""}
-      ${state.secret ? `<div class="ok secret">New key (copy now): ${esc(state.secret)}</div>` : ""}
-      ${view()}
+      <div id="chrome"></div>
+      <div id="view"></div>
       <footer class="foot">${state.meta.mock ? "Mock inventory." : "Live Massed inventory · Workers AI match"}</footer>
     </div>
   `;
   $("#logout")?.addEventListener("click", async () => {
     await api("/api/auth/logout", { method: "POST" });
     state.user = null;
-    render();
+    app.innerHTML = "";
+    renderAuth();
   });
   for (const b of document.querySelectorAll(".nav [data-tab]")) {
-    b.addEventListener("click", () => {
-      state.tab = b.dataset.tab;
-      state.flash = "";
-      loadTab();
-    });
+    b.addEventListener("click", () => switchTab(b.dataset.tab));
   }
+}
+
+function paintNav() {
+  for (const b of document.querySelectorAll(".nav [data-tab]")) {
+    b.classList.toggle("active", b.dataset.tab === state.tab);
+  }
+}
+
+function paintChrome() {
+  const el = $("#chrome");
+  if (!el) return;
+  el.innerHTML = `
+    ${state.flash ? `<div class="flash">${esc(state.flash)}</div>` : ""}
+    ${state.secret ? `<div class="ok secret">New key (copy now): ${esc(state.secret)}</div>` : ""}
+  `;
+}
+
+function paintView() {
+  const el = $("#view");
+  if (!el) return;
+  el.innerHTML = view();
   bindView();
+}
+
+function switchTab(id) {
+  if (!id) return;
+  state.tab = id;
+  state.flash = "";
+  paintNav();
+  paintView();
+  refreshTab();
 }
 
 function tabBtn(id, label) {
@@ -115,7 +151,9 @@ function renderAuth() {
       state.user = data.user;
       state.flash = "";
       state.tab = "match";
-      await loadTab();
+      app.innerHTML = "";
+      render();
+      refreshTab();
     } catch (err) {
       state.flash = err.message;
       renderAuth();
@@ -185,7 +223,7 @@ function usageView() {
   const m = state.massed;
   return `
     <h1>Usage</h1>
-    <p class="lead">${isAdmin ? "Proxy metering plus Massed watch (sampled every 5 minutes)." : "Debits for VMs you launched here."}</p>
+    <p class="lead">${isAdmin ? "Spend from this desk, plus VMs seen on the Massed account (updated every 5 minutes)." : "Debits for VMs you launched here."}</p>
     <div class="grid stats">
       <div class="card"><div class="k">Metered</div><div class="v">${money(s.spent_cents)}</div><div class="s">${s.event_count} events</div></div>
       <div class="card"><div class="k">Hours</div><div class="v">${Number(s.hours || 0).toFixed(2)}</div></div>
@@ -194,8 +232,7 @@ function usageView() {
     </div>
     ${isAdmin ? `
     <div class="card" style="margin-bottom:14px">
-      <h2>Massed watch</h2>
-      <div class="row" style="margin-bottom:12px"><button class="primary slim" id="watch-now">Sample now</button></div>
+      <h2>Massed history</h2>
       ${watchVmTable(state.watch?.vms || [])}
     </div>` : ""}
     <div class="card">
@@ -427,23 +464,15 @@ function bindView() {
     state.matchQuery = String(query);
     state.matching = true;
     state.flash = "";
-    render();
+    paintView();
     try {
       state.match = await api("/api/match", { method: "POST", body: JSON.stringify({ query: state.matchQuery }) });
     } catch (err) {
       state.flash = err.message;
     }
     state.matching = false;
-    render();
-  });
-  $("#watch-now")?.addEventListener("click", async () => {
-    try {
-      await api("/api/admin/meter", { method: "POST" });
-      await loadTab();
-    } catch (err) {
-      state.flash = err.message;
-      render();
-    }
+    paintChrome();
+    paintView();
   });
   $("#key-form")?.addEventListener("submit", async (e) => {
     e.preventDefault();
@@ -451,16 +480,16 @@ function bindView() {
     try {
       const data = await api("/api/keys", { method: "POST", body: JSON.stringify({ name }) });
       state.secret = data.key.token;
-      await loadTab();
+      await refreshTab();
     } catch (err) {
       state.flash = err.message;
-      render();
+      paintChrome();
     }
   });
   for (const b of document.querySelectorAll("[data-del-key]")) {
     b.addEventListener("click", async () => {
       await api(`/api/keys/${b.dataset.delKey}`, { method: "DELETE" });
-      await loadTab();
+      await refreshTab();
     });
   }
   for (const b of document.querySelectorAll("[data-launch]")) {
@@ -470,8 +499,7 @@ function bindView() {
           method: "POST",
           body: JSON.stringify({ productName: b.dataset.launch }),
         });
-        state.tab = "machines";
-        await loadTab();
+        switchTab("machines");
       } catch (err) {
         state.flash = err.message;
         render();
@@ -482,13 +510,13 @@ function bindView() {
     b.addEventListener("click", async () => {
       if (!confirm("Terminate destroys the disk. Continue?")) return;
       await api(`/api/instances/${b.dataset.kill}/terminate`, { method: "POST" });
-      await loadTab();
+      await refreshTab();
     });
   }
   for (const b of document.querySelectorAll("[data-restart]")) {
     b.addEventListener("click", async () => {
       await api(`/api/instances/${b.dataset.restart}/restart`, { method: "POST" });
-      await loadTab();
+      await refreshTab();
     });
   }
   for (const row of document.querySelectorAll("[data-user]")) {
@@ -512,7 +540,7 @@ function bindView() {
         }),
       });
       state.adminDetail = await api(`/api/admin/users/${state.adminDetail.user.id}`);
-      await loadTab();
+      await refreshTab();
     } catch (err) {
       state.flash = err.message;
       render();
@@ -520,42 +548,57 @@ function bindView() {
   });
 }
 
-async function loadTab() {
+async function refreshTab() {
+  const my = ++fetchGen;
+  const tab = state.tab;
   try {
-    const me = await api("/api/me");
-    state.user = me.user;
-    state.massed = me.massed || null;
-    if (state.tab === "usage") {
+    if (tab === "match" && state.user.role === "admin" && !state.massed) {
+      const acc = await api("/api/account");
+      if (my !== fetchGen) return;
+      state.massed = acc.massed || null;
+    } else if (tab === "usage") {
       const path = state.user.role === "admin" ? "/api/admin/usage" : "/api/usage";
       const u = await api(path);
+      if (my !== fetchGen) return;
       state.usage = u.events || [];
       state.usageSummary = u.summary || { spent_cents: 0, hours: 0, event_count: 0, by_sku: [], by_user: [] };
       if (u.massed) state.massed = u.massed;
       if (u.watch) state.watch = u.watch;
-    } else if (state.tab === "machines") {
-      state.instances = (await api("/api/instances")).instances;
-    } else if (state.tab === "keys") {
-      state.keys = (await api("/api/keys")).keys;
-    } else if (state.tab === "admin") {
+    } else if (tab === "machines") {
+      const data = await api("/api/instances");
+      if (my !== fetchGen) return;
+      state.instances = data.instances;
+    } else if (tab === "keys") {
+      const data = await api("/api/keys");
+      if (my !== fetchGen) return;
+      state.keys = data.keys;
+    } else if (tab === "admin") {
       const [users, fleet, inv, up] = await Promise.all([
         api("/api/admin/users"),
         api("/api/admin/fleet"),
         api("/api/admin/catalog"),
         api("/api/admin/upstream"),
       ]);
+      if (my !== fetchGen) return;
       state.adminUsers = users.users;
       state.fleet = fleet.instances;
       state.inventory = inv;
       state.upstream = up.instances || [];
+    } else {
+      return;
     }
+    if (state.tab === tab) paintView();
   } catch (err) {
     if (err.message === "Unauthorized") {
       state.user = null;
-    } else {
+      renderAuth();
+      return;
+    }
+    if (my === fetchGen) {
       state.flash = err.message;
+      paintChrome();
     }
   }
-  render();
 }
 
 function esc(s) {
@@ -568,12 +611,11 @@ function esc(s) {
 
 async function boot() {
   try {
-    state.meta = await api("/api/meta");
-  } catch { /* ignore */ }
-  try {
     const me = await api("/api/me");
     state.user = me.user;
-    await loadTab();
+    if (typeof me.mock === "boolean") state.meta.mock = me.mock;
+    render();
+    refreshTab();
   } catch {
     renderAuth();
   }

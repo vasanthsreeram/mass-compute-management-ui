@@ -1,6 +1,6 @@
 import type { PublicUser } from "./db";
-import type { GpuSku, MassedImage } from "./massed";
-import { listImages, listInventory } from "./massed";
+import type { GpuSku } from "./massed";
+import { listInventory } from "./massed";
 import { filterInventory, HttpError } from "./policy";
 
 const MODEL = "@cf/meta/llama-3.1-8b-instruct-fast";
@@ -16,7 +16,6 @@ export type MatchResult = {
   model: string;
   pick: MatchPick | null;
   alternatives: MatchPick[];
-  images: MassedImage[];
 };
 
 type AiRun = {
@@ -111,7 +110,7 @@ export async function recommendSetup(env: Env, user: PublicUser, queryRaw: strin
   const query = queryRaw.trim().slice(0, 2000);
   if (query.length < 3) throw new HttpError(400, "Describe the task in a bit more detail");
 
-  const [allSkus, images] = await Promise.all([listInventory(env), listImages(env)]);
+  const allSkus = await listInventory(env);
   const allowed = filterInventory(user, allSkus);
   if (!allowed.length) throw new HttpError(403, "No GPUs on your allowlist");
   const skus = constrain(allowed, query);
@@ -163,5 +162,5 @@ Rules:
   }
 
   const alternatives = alts.slice(0, 3).map((s) => asPick(s, "Also considered."));
-  return { query, model: MODEL, pick, alternatives, images };
+  return { query, model: MODEL, pick, alternatives };
 }

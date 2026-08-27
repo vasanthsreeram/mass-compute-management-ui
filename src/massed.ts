@@ -64,6 +64,17 @@ const MOCK_IMAGES: MassedImage[] = [
   { vm_image_id: 7, vm_image_name: "Art", vm_image_description: "Creative / diffusion stack" },
 ];
 
+type CacheBox<T> = { at: number; value: T };
+const cache = new Map<string, CacheBox<unknown>>();
+
+async function cached<T>(key: string, ttlMs: number, fn: () => Promise<T>): Promise<T> {
+  const hit = cache.get(key) as CacheBox<T> | undefined;
+  if (hit && Date.now() - hit.at < ttlMs) return hit.value;
+  const value = await fn();
+  cache.set(key, { at: Date.now(), value });
+  return value;
+}
+
 function mockEnabled(env: Env): boolean {
   if (env.MOCK_MASSED === "1") return true;
   return !env.MASSED_COMPUTE_API_KEY;
@@ -111,17 +122,21 @@ export function parseInventory(payload: unknown): GpuSku[] {
 
 export async function listInventory(env: Env): Promise<GpuSku[]> {
   if (mockEnabled(env)) return MOCK_SKUS;
-  const res = await mcFetch(env, "/gpu-inventory");
-  if (!res.ok) throw new Error(`massed inventory ${res.status}`);
-  return parseInventory(await res.json());
+  return cached("inventory", 90_000, async () => {
+    const res = await mcFetch(env, "/gpu-inventory");
+    if (!res.ok) throw new Error(`massed inventory ${res.status}`);
+    return parseInventory(await res.json());
+  });
 }
 
 export async function listImages(env: Env): Promise<MassedImage[]> {
   if (mockEnabled(env)) return MOCK_IMAGES;
-  const res = await mcFetch(env, "/images");
-  if (!res.ok) throw new Error(`massed images ${res.status}`);
-  const data = (await res.json()) as { images?: MassedImage[] };
-  return data.images ?? [];
+  return cached("images", 300_000, async () => {
+    const res = await mcFetch(env, "/images");
+    if (!res.ok) throw new Error(`massed images ${res.status}`);
+    const data = (await res.json()) as { images?: MassedImage[] };
+    return data.images ?? [];
+  });
 }
 
 export async function launchInstance(
@@ -141,6 +156,7 @@ export async function launchInstance(
   }
   const data = (await res.json()) as { response?: string };
   if (!data.response) throw new Error("massed launch missing uuid");
+  invalidateMassed("instances");
   return { uuid: data.response, mock: false };
 }
 
@@ -151,6 +167,7 @@ export async function restartInstances(env: Env, uuids: string[]): Promise<void>
     body: JSON.stringify({ instanceUuids: uuids }),
   });
   if (!res.ok) throw new Error(`massed restart ${res.status}`);
+  invalidateMassed("instances");
 }
 
 export async function terminateInstances(env: Env, uuids: string[]): Promise<void> {
@@ -162,6 +179,7 @@ export async function terminateInstances(env: Env, uuids: string[]): Promise<voi
     body: JSON.stringify({ instanceUuids: real }),
   });
   if (!res.ok) throw new Error(`massed terminate ${res.status}`);
+  invalidateMassed("instances");
 }
 
 export type RemoteInstance = {
@@ -190,8 +208,14 @@ function hoursSince(iso: string | null): number {
   return (Date.now() - t) / 3_600_000;
 }
 
+export function invalidateMassed(...keys: string[]): void {
+  if (!keys.length) cache.clear();
+  else for (const k of keys) cache.delete(k);
+}
+
 export async function listRunningInstances(env: Env): Promise<RemoteInstance[]> {
   if (mockEnabled(env)) return [];
+  return cached("instances", 15_000, async () => {
   const res = await mcFetch(env, "/instance");
   if (!res.ok) throw new Error(`massed instances ${res.status}`);
   const data = (await res.json()) as { runningInstances?: Record<string, unknown>[] };
@@ -213,13 +237,16 @@ export async function listRunningInstances(env: Env): Promise<RemoteInstance[]> 
       accumulatedCents: Math.round(uptimeHours * priceCentsPerHour),
     };
   });
+  });
 }
 
 export async function getBilling(env: Env): Promise<Record<string, unknown> | null> {
   if (mockEnabled(env)) return null;
-  const res = await mcFetch(env, "/account/billing");
-  if (!res.ok) return null;
-  return (await res.json()) as Record<string, unknown>;
+  return cached("billing", 60_000, async () => {
+    const res = await mcFetch(env, "/account/billing");
+    if (!res.ok) return null;
+    return (await res.json()) as Record<string, unknown>;
+  });
 }
 
 export type MassedBilling = {
@@ -272,13 +299,14 @@ export async function getAccountSnapshot(env: Env): Promise<MassedAccount> {
     return { ...empty, error: "MASSED_COMPUTE_API_KEY is not set." };
   }
   try {
-    const [tokenValid, instances, skus, billingRaw] = await Promise.all([
-      validateToken(env),
+    const [instances, billingRaw] = await Promise.all([
       listRunningInstances(env),
-      listInventory(env),
       getBilling(env),
     ]);
-    const price = new Map(skus.map((s) => [s.productName, s.priceCentsPerHour]));
+    const needPrice = instances.some((i) => !i.priceCentsPerHour && i.productName);
+    const price = needPrice
+      ? new Map((await listInventory(env)).map((s) => [s.productName, s.priceCentsPerHour]))
+      : new Map<string, number>();
     const priced = instances.map((i) => {
       const rate = i.priceCentsPerHour || price.get(i.productName || "") || 0;
       return {
@@ -290,9 +318,9 @@ export async function getAccountSnapshot(env: Env): Promise<MassedAccount> {
     const burnCentsPerHour = priced.reduce((n, i) => n + i.priceCentsPerHour, 0);
     const accumulatedCents = priced.reduce((n, i) => n + i.accumulatedCents, 0);
     return {
-      connected: tokenValid,
+      connected: true,
       mock: false,
-      tokenValid,
+      tokenValid: true,
       running: priced.length,
       burnCentsPerHour,
       accumulatedCents,
@@ -300,7 +328,7 @@ export async function getAccountSnapshot(env: Env): Promise<MassedAccount> {
       longRunning7d: priced.filter((i) => i.uptimeHours >= 24 * 7).length,
       billing: parseBilling(billingRaw),
       instances: priced,
-      error: tokenValid ? null : "Massed token was rejected.",
+      error: null,
     };
   } catch (e) {
     return { ...empty, error: e instanceof Error ? e.message : "Massed request failed" };
