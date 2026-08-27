@@ -24,6 +24,7 @@ Base: `$GPU_PROXY_URL`
 
 - `GET /api/me` — credit, allowlist, concurrent cap
 - `GET /api/inventory` — SKUs this key may rent
+- `POST /api/match` — `{ "query": "fine-tune llama 8b cheap" }` → cheapest SKU recommendation
 - `GET /api/instances` — this user's VMs
 - `POST /api/instances` — launch `{ "productName", "imageId?", "instanceName?", "regionName?", "sshPublicKey?" }`
 - `GET /api/instances/:id` — details including SSH user/password (owner only)

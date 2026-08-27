@@ -2,6 +2,7 @@ import { createApiKey, createSession, destroySession, loginUser, publicUser, reg
 import { audit, getUserById, publicUser as toPublic, type UserRow } from "./db";
 import { handleLaunch, handleListInstances, handleRestart, handleTerminate, instanceDetail } from "./instances";
 import { getAccountSnapshot, getBilling, listImages, listInventory, listRunningInstances } from "./massed";
+import { recommendSetup } from "./match";
 import { HttpError, filterInventory, parseGpus } from "./policy";
 import { handleMcp } from "./mcp";
 import { tickMeter } from "./meter";
@@ -98,6 +99,12 @@ export async function handleRequest(request: Request, env: Env, ctx: ExecutionCo
       const auth = await requireAuth(env, request);
       const [skus, images] = await Promise.all([listInventory(env), listImages(env)]);
       return json({ gpus: filterInventory(auth.public, skus), images });
+    }
+
+    if (path === "/api/match" && method === "POST") {
+      const auth = await requireAuth(env, request);
+      const body = await readJson(request);
+      return json(await recommendSetup(env, auth.public, String(body.query ?? body.text ?? "")));
     }
 
     if (path === "/api/instances" && method === "GET") {

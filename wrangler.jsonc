@@ -29,5 +29,8 @@
   },
   "vars": {
     "MOCK_MASSED": "0"
+  },
+  "ai": {
+    "binding": "AI"
   }
 }

@@ -8,6 +8,7 @@ A Cloudflare Worker in front of **one** Massed Compute account key. People log i
 
 - Email + password auth on the Worker (D1 sessions, no WorkOS)
 - Per-user **proxy budget**, **GPU allowlist**, **concurrent cap**
+- **Match:** describe a job; Workers AI (`@cf/meta/llama-3.1-8b-instruct-fast`) picks the cheapest live SKU that fits
 - Per-user API keys for coding agents, plus a copy-skill
 - Admins can promote other admins, edit permissions, and see VM + usage history
 - Overview for admins reads the **live Massed account** (token check, running VMs, $/hr burn, recharge settings)

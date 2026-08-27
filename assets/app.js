@@ -3,7 +3,7 @@ const app = $("#app");
 
 const state = {
   user: null,
-  tab: "overview",
+  tab: "match",
   meta: { mock: true },
   massed: null,
   upstream: [],
@@ -18,6 +18,9 @@ const state = {
   fleet: [],
   flash: "",
   secret: "",
+  matchQuery: "",
+  match: null,
+  matching: false,
 };
 
 async function api(path, opts = {}) {
@@ -45,23 +48,20 @@ function render() {
   app.innerHTML = `
     <div class="wrap">
       <header class="top">
-        <div class="brand">MASSED COMPUTE <small>Management UI</small></div>
+        <div class="brand">Massed Compute <span>desk</span></div>
         <nav class="nav">
-          ${tabBtn("overview", "Overview")}
-          ${tabBtn("usage", "Usage")}
+          ${tabBtn("match", "Match")}
           ${tabBtn("machines", "Machines")}
-          ${tabBtn("catalog", "Catalog")}
-          ${tabBtn("keys", "Agent keys")}
+          ${tabBtn("usage", "Usage")}
+          ${tabBtn("keys", "Keys")}
           ${state.user.role === "admin" ? tabBtn("admin", "Admin") : ""}
           <button class="ghost" id="logout">Sign out</button>
         </nav>
       </header>
       ${state.flash ? `<div class="flash">${esc(state.flash)}</div>` : ""}
-      ${state.secret ? `<div class="ok secret">New key (copy now, shown once): ${esc(state.secret)}</div>` : ""}
+      ${state.secret ? `<div class="ok secret">New key (copy now): ${esc(state.secret)}</div>` : ""}
       ${view()}
-      <footer class="foot">
-        ${state.meta.mock ? "Mock inventory (no live Massed key)." : "Live Massed Compute inventory."}
-      </footer>
+      <footer class="foot">${state.meta.mock ? "Mock inventory." : "Live Massed inventory · Workers AI match"}</footer>
     </div>
   `;
   $("#logout")?.addEventListener("click", async () => {
@@ -86,9 +86,9 @@ function tabBtn(id, label) {
 function renderAuth() {
   app.innerHTML = `
     <div class="auth">
-      <div class="brand">MASSED COMPUTE <small>Management UI</small></div>
+      <div class="brand">Massed Compute <span>desk</span></div>
       <h1>Sign in</h1>
-      <p class="lead">Email + password. First account becomes admin.</p>
+      <p class="lead">First account is admin. GPU rental stays on your proxy budget.</p>
       ${state.flash ? `<div class="flash">${esc(state.flash)}</div>` : ""}
       <form id="auth-form">
         <label>Email</label>
@@ -97,10 +97,9 @@ function renderAuth() {
         <input name="password" type="password" required minlength="8" autocomplete="current-password" />
         <div class="row" style="margin-top:16px">
           <button class="primary" type="submit" data-mode="login">Log in</button>
-          <button class="ghost" type="submit" data-mode="register">Create account</button>
+          <button class="ghost slim" type="submit" data-mode="register">Create account</button>
         </div>
       </form>
-      <p class="lead" style="margin-top:18px">GPU VMs are billed against your proxy budget. Upstream capacity is Massed Compute.</p>
     </div>
   `;
   const form = $("#auth-form");
@@ -115,7 +114,7 @@ function renderAuth() {
       });
       state.user = data.user;
       state.flash = "";
-      state.tab = "overview";
+      state.tab = "match";
       await loadTab();
     } catch (err) {
       state.flash = err.message;
@@ -124,40 +123,59 @@ function renderAuth() {
   });
 }
 
-function overviewView() {
+function statusStrip() {
   const isAdmin = state.user.role === "admin";
   const m = state.massed;
-  const recharge = m?.billing || {};
   if (isAdmin) {
-    const live = !!m?.connected;
     return `
-      <h1>${esc(state.user.email)}</h1>
-      <p class="lead">${live
-        ? "Live Massed Compute account (the operator key). Massed does not expose wallet dollars over API — this is burn, running VMs, and recharge settings."
-        : `Not reading the Massed account. ${esc(m?.error || "Check MASSED_COMPUTE_API_KEY.")}`}</p>
       <div class="grid stats">
-        <div class="card"><div class="k">Massed status</div><div class="v" style="font-size:18px">${live ? "Connected" : "Offline"}</div><div class="s">${m?.mock ? "Mock mode" : "Token validated against Massed"}</div></div>
-        <div class="card"><div class="k">Massed burn</div><div class="v">${money(m?.burnCentsPerHour || 0)}/hr</div><div class="s">Sum of running SKUs</div></div>
-        <div class="card"><div class="k">Running VMs</div><div class="v">${m?.running ?? 0}</div><div class="s">${m?.longRunning24h ?? 0} over 24h · ${m?.longRunning7d ?? 0} over 7d</div></div>
-        <div class="card"><div class="k">Accrued on running</div><div class="v">${money(m?.accumulatedCents || 0)}</div><div class="s">uptime × $/hr — terminated VMs are not in the API</div></div>
-        <div class="card"><div class="k">Auto-recharge</div><div class="v">${money(Number(recharge.rechargeAmountCents || 0))}</div><div class="s">when Massed balance hits ${money(Number(recharge.rechargeThresholdCents || 0))}</div></div>
-        <div class="card"><div class="k">Billing method</div><div class="v" style="font-size:18px">${esc(recharge.billingMethod || "—")}</div><div class="s">Wallet $ is only on Massed’s billing page</div></div>
-      </div>
-      <div class="card" style="margin-top:16px">
-        <h2>Massed running VMs</h2>
-        ${upstreamTable(m?.instances || [])}
+        <div class="card"><div class="k">Account</div><div class="v" style="font-size:16px">${m?.connected ? "Connected" : "Offline"}</div></div>
+        <div class="card"><div class="k">Burn</div><div class="v">${money(m?.burnCentsPerHour || 0)}/hr</div></div>
+        <div class="card"><div class="k">Running</div><div class="v">${m?.running ?? 0}</div></div>
+        <div class="card"><div class="k">Recharge</div><div class="v">${money(Number(m?.billing?.rechargeAmountCents || 0))}</div><div class="s">at ${money(Number(m?.billing?.rechargeThresholdCents || 0))}</div></div>
       </div>
     `;
   }
   return `
-    <h1>${esc(state.user.email)}</h1>
-    <p class="lead">This is your proxy budget, assigned by an admin. It is not the Massed wallet.</p>
     <div class="grid stats">
-      <div class="card"><div class="k">Proxy budget left</div><div class="v">${money(state.user.credit_cents)}</div><div class="s">Allocated by an admin</div></div>
+      <div class="card"><div class="k">Budget left</div><div class="v">${money(state.user.credit_cents)}</div></div>
       <div class="card"><div class="k">Spent</div><div class="v">${money(state.user.spent_cents)}</div></div>
-      <div class="card"><div class="k">Role</div><div class="v">${esc(state.user.role)}</div><div class="s">max ${state.user.max_concurrent} concurrent</div></div>
-      <div class="card"><div class="k">Allowed GPUs</div><div class="v" style="font-size:14px">${esc(state.user.allowed_gpus.join(", ") || "none")}</div></div>
+      <div class="card"><div class="k">Cap</div><div class="v">${state.user.max_concurrent}</div><div class="s">concurrent VMs</div></div>
     </div>
+  `;
+}
+
+function skuCard(pick, primary) {
+  if (!pick) return "";
+  const s = pick.sku;
+  return `
+    <div class="card match-result">
+      <h2>${primary ? "Recommended" : "Alternative"}</h2>
+      <div class="mono">${esc(s.productName)}</div>
+      <div class="s">${esc(s.description)} · ${s.vcpu} vCPU · ${s.ramGib} GiB · ${s.storageGb} GB</div>
+      <div class="price">${money(s.priceCentsPerHour)}/hr</div>
+      <div class="s">${pick.inStock ? `${s.capacity} in stock` : "Out of stock"}</div>
+      <p class="lead" style="margin-top:10px">${esc(pick.reason)}</p>
+      ${pick.inStock ? `<button class="primary slim" data-launch="${esc(s.productName)}">Launch</button>` : ""}
+    </div>
+  `;
+}
+
+function matchView() {
+  const m = state.match;
+  return `
+    <h1>Match a setup</h1>
+    <p class="lead">Describe the job. Cloudflare Workers AI picks the cheapest SKU on your allowlist that can do it.</p>
+    ${statusStrip()}
+    <form id="match-form" class="card match-form">
+      <textarea name="query" placeholder="e.g. fine-tune Llama 8B overnight, need ~24GB VRAM, keep it cheap">${esc(state.matchQuery)}</textarea>
+      <div class="actions">
+        <button class="primary slim" type="submit" ${state.matching ? "disabled" : ""}>${state.matching ? "Matching…" : "Recommend"}</button>
+        <span class="hint">Llama 3.1 8B on Workers AI · live Massed prices</span>
+      </div>
+    </form>
+    ${m?.pick ? skuCard(m.pick, true) : ""}
+    ${m?.alternatives?.length ? `<div class="match-alts">${m.alternatives.map((a) => skuCard(a, false)).join("")}</div>` : ""}
   `;
 }
 
@@ -167,46 +185,20 @@ function usageView() {
   const m = state.massed;
   return `
     <h1>Usage</h1>
-    <p class="lead">${isAdmin
-      ? "Massed has no past-usage API. This Worker polls running VMs every 5 minutes and keeps its own ledger (including after they terminate). Proxy tenant metering is separate."
-      : "Timestamped debit events for VMs you launched through this proxy."}</p>
+    <p class="lead">${isAdmin ? "Proxy metering plus Massed watch (sampled every 5 minutes)." : "Debits for VMs you launched here."}</p>
     <div class="grid stats">
-      <div class="card"><div class="k">Metered spend</div><div class="v">${money(s.spent_cents)}</div><div class="s">${s.event_count} events</div></div>
+      <div class="card"><div class="k">Metered</div><div class="v">${money(s.spent_cents)}</div><div class="s">${s.event_count} events</div></div>
       <div class="card"><div class="k">Hours</div><div class="v">${Number(s.hours || 0).toFixed(2)}</div></div>
-      ${isAdmin ? `<div class="card"><div class="k">Massed burn now</div><div class="v">${money(m?.burnCentsPerHour || 0)}/hr</div><div class="s">${m?.running ?? 0} running · accrued ${money(m?.accumulatedCents || 0)}</div></div>` : ""}
-      ${isAdmin ? `<div class="card"><div class="k">Watched Massed spend</div><div class="v">${money(state.watch?.summary?.cents || 0)}</div><div class="s">${state.watch?.summary?.vm_count || 0} VMs sampled · ${Number(state.watch?.summary?.hours || 0).toFixed(2)} h</div></div>` : ""}
+      ${isAdmin ? `<div class="card"><div class="k">Massed now</div><div class="v">${money(m?.burnCentsPerHour || 0)}/hr</div></div>` : ""}
+      ${isAdmin ? `<div class="card"><div class="k">Watched</div><div class="v">${money(state.watch?.summary?.cents || 0)}</div></div>` : ""}
     </div>
     ${isAdmin ? `
-    <div class="card" style="margin-top:16px">
-      <h2>Massed running (live)</h2>
-      <div class="row" style="margin-bottom:12px"><button class="primary slim" id="watch-now">Sample Massed now</button></div>
-      ${upstreamTable(m?.instances || [])}
-    </div>
-    <div class="card" style="margin-top:16px">
-      <h2>Massed watch history</h2>
+    <div class="card" style="margin-bottom:14px">
+      <h2>Massed watch</h2>
+      <div class="row" style="margin-bottom:12px"><button class="primary slim" id="watch-now">Sample now</button></div>
       ${watchVmTable(state.watch?.vms || [])}
     </div>` : ""}
-    ${s.by_sku?.length ? `
-    <div class="card" style="margin-top:16px">
-      <h2>By SKU</h2>
-      <table>
-        <thead><tr><th>SKU</th><th>Hours</th><th>Amount</th></tr></thead>
-        <tbody>
-          ${s.by_sku.map((r) => `<tr><td class="mono">${esc(r.product_name)}</td><td class="mono">${Number(r.hours || 0).toFixed(3)}</td><td class="mono">${money(r.cents)}</td></tr>`).join("")}
-        </tbody>
-      </table>
-    </div>` : ""}
-    ${isAdmin && s.by_user?.length ? `
-    <div class="card" style="margin-top:16px">
-      <h2>By user</h2>
-      <table>
-        <thead><tr><th>Email</th><th>Hours</th><th>Amount</th></tr></thead>
-        <tbody>
-          ${s.by_user.map((r) => `<tr><td>${esc(r.email)}</td><td class="mono">${Number(r.hours || 0).toFixed(3)}</td><td class="mono">${money(r.cents)}</td></tr>`).join("")}
-        </tbody>
-      </table>
-    </div>` : ""}
-    <div class="card" style="margin-top:16px">
+    <div class="card">
       <h2>Events</h2>
       ${usageTable(state.usage, isAdmin)}
     </div>
@@ -214,50 +206,23 @@ function usageView() {
 }
 
 function view() {
-  if (state.tab === "overview") return overviewView();
+  if (state.tab === "match") return matchView();
   if (state.tab === "usage") return usageView();
   if (state.tab === "machines") {
     return `
       <h1>Machines</h1>
+      <p class="lead">VMs launched through this desk. Terminate wipes the disk.</p>
       <div class="card">${instanceTable(state.instances, true)}</div>
-    `;
-  }
-  if (state.tab === "catalog") {
-    const images = state.inventory.images || [];
-    return `
-      <h1>Catalog</h1>
-      <p class="lead">Only SKUs on your allowlist are shown. Launch spends your proxy budget; terminate destroys the disk.</p>
-      <div class="card">
-        <table>
-          <thead><tr><th>SKU</th><th>Specs</th><th>$/hr</th><th>Stock</th><th></th></tr></thead>
-          <tbody>
-            ${(state.inventory.gpus || []).map((g) => `
-              <tr>
-                <td class="mono">${esc(g.productName)}<div class="s">${esc(g.description)}</div></td>
-                <td>${g.vcpu} vCPU · ${g.ramGib} GiB · ${g.storageGb} GB</td>
-                <td class="mono">${money(g.priceCentsPerHour)}</td>
-                <td>${g.capacity}</td>
-                <td>
-                  <button class="primary slim" data-launch="${esc(g.productName)}">Launch</button>
-                </td>
-              </tr>`).join("") || `<tr><td colspan="5">No GPUs assigned. Ask an admin.</td></tr>`}
-          </tbody>
-        </table>
-        <label>Image</label>
-        <select id="image-id">
-          ${images.map((i) => `<option value="${i.vm_image_id}">${esc(i.vm_image_name)} (${i.vm_image_id})</option>`).join("")}
-        </select>
-      </div>
     `;
   }
   if (state.tab === "keys") {
     return `
       <h1>Agent keys</h1>
-      <p class="lead">Give this to your coding agent. It never talks to Massed Compute — only to this proxy, under your budget and GPU allowlist.</p>
+      <p class="lead">The agent talks only to this proxy — never to Massed.</p>
       <div class="card">
         <form id="key-form" class="row">
-          <input name="name" placeholder="key name, e.g. claude" required />
-          <button class="primary slim" type="submit">Create key</button>
+          <input name="name" placeholder="name, e.g. claude" required />
+          <button class="primary slim" type="submit">Create</button>
         </form>
         <table style="margin-top:16px">
           <thead><tr><th>Name</th><th>Prefix</th><th>Created</th><th>Last used</th><th></th></tr></thead>
@@ -273,17 +238,15 @@ function view() {
           </tbody>
         </table>
       </div>
-      <div class="card" style="margin-top:16px">
-        <h2>Copy-skill snippet</h2>
+      <div class="card" style="margin-top:14px">
+        <h2>Skill</h2>
         <pre>GPU_PROXY_URL=${location.origin}
 GPU_PROXY_API_KEY=gpk_…</pre>
-        <p class="lead">Skill file: <a href="/skill.md">/skill.md</a></p>
+        <p class="lead"><a href="/skill.md">skill.md</a></p>
       </div>
     `;
   }
-  if (state.tab === "admin") {
-    return renderAdmin();
-  }
+  if (state.tab === "admin") return renderAdmin();
   return "";
 }
 
@@ -291,12 +254,12 @@ function renderAdmin() {
   const d = state.adminDetail;
   return `
     <h1>Admin</h1>
-    <p class="lead">Promote admins, set each user’s GPU allowlist, proxy budget, and concurrent cap. Usage is timestamped per VM.</p>
+    <p class="lead">Roles, GPU allowlist, proxy budget, concurrent cap.</p>
     <div class="split">
       <div class="card">
         <h2>Users</h2>
         <table>
-          <thead><tr><th>Email</th><th>Role</th><th>Proxy budget</th><th>Running</th></tr></thead>
+          <thead><tr><th>User</th><th>Role</th><th>Budget</th><th>Running</th></tr></thead>
           <tbody>
             ${state.adminUsers.map((u) => `
               <tr class="user-row" data-user="${u.id}">
@@ -312,12 +275,12 @@ function renderAdmin() {
         ${d ? adminDetailHtml(d) : "<p class='lead'>Select a user.</p>"}
       </div>
     </div>
-    <div class="card" style="margin-top:16px">
-      <h2>Proxy fleet</h2>
+    <div class="card" style="margin-top:14px">
+      <h2>Fleet</h2>
       ${instanceTable(state.fleet, false, true)}
     </div>
-    <div class="card" style="margin-top:16px">
-      <h2>Massed account (live)</h2>
+    <div class="card" style="margin-top:14px">
+      <h2>Massed live</h2>
       ${upstreamTable(state.upstream)}
     </div>
   `;
@@ -336,16 +299,16 @@ function adminDetailHtml(d) {
         <option value="user" ${u.role === "user" ? "selected" : ""}>user</option>
         <option value="admin" ${u.role === "admin" ? "selected" : ""}>admin</option>
       </select>
-      <label>Proxy budget (cents) — not the Massed wallet</label>
+      <label>Proxy budget (cents)</label>
       <input name="credit_cents" type="number" min="0" value="${u.credit_cents}" />
-      <label>Max concurrent VMs</label>
+      <label>Max concurrent</label>
       <input name="max_concurrent" type="number" min="0" max="32" value="${u.max_concurrent}" />
       <label>Allowed GPUs</label>
       <div class="checks">
-        <label><input type="checkbox" name="gpu" value="*" ${all ? "checked" : ""} /> * all SKUs</label>
+        <label><input type="checkbox" name="gpu" value="*" ${all ? "checked" : ""} /> all SKUs</label>
         ${gpus.map((g) => `<label><input type="checkbox" name="gpu" value="${esc(g.productName)}" ${!all && allowed.has(g.productName) ? "checked" : ""} /> ${esc(g.productName)}</label>`).join("")}
       </div>
-      <button class="primary slim" type="submit">Save permissions</button>
+      <button class="primary slim" type="submit">Save</button>
     </form>
     <h2 style="margin-top:24px">VMs</h2>
     ${instanceTable(d.instances || [], false)}
@@ -360,7 +323,7 @@ function instanceTable(rows, actions, showEmail = false) {
     <table>
       <thead><tr>
         ${showEmail ? "<th>User</th>" : ""}
-        <th>Name</th><th>SKU</th><th>Status</th><th>$/hr</th><th>Launched</th><th>Terminated</th>
+        <th>Name</th><th>SKU</th><th>Status</th><th>$/hr</th><th>Launched</th><th>Ended</th>
         ${actions ? "<th></th>" : ""}
       </tr></thead>
       <tbody>
@@ -386,18 +349,17 @@ function instanceTable(rows, actions, showEmail = false) {
 }
 
 function watchVmTable(rows) {
-  if (!rows?.length) return `<p class="lead">No samples yet. Cron polls Massed every 5 minutes, or use Sample Massed now.</p>`;
+  if (!rows?.length) return `<p class="lead">No samples yet.</p>`;
   return `
     <table>
-      <thead><tr><th>Name</th><th>SKU</th><th>Status</th><th>First seen</th><th>Last seen</th><th>Hours</th><th>Est. $</th></tr></thead>
+      <thead><tr><th>Name</th><th>SKU</th><th>Status</th><th>Last seen</th><th>Hours</th><th>Est.</th></tr></thead>
       <tbody>
         ${rows.map((r) => `
           <tr>
-            <td class="mono">${esc(r.name)}<div class="s">${esc(r.uuid)}</div></td>
+            <td class="mono">${esc(r.name)}</td>
             <td class="mono">${esc(r.product_name || "")}</td>
             <td><span class="pill ${r.ended_at ? "off" : "run"}">${esc(r.ended_at ? "ended" : r.status)}</span></td>
-            <td class="mono">${esc(fmt(r.first_seen_at))}</td>
-            <td class="mono">${esc(fmt(r.last_seen_at))}${r.ended_at ? `<div class="s">ended ${esc(fmt(r.ended_at))}</div>` : ""}</td>
+            <td class="mono">${esc(fmt(r.last_seen_at))}</td>
             <td class="mono">${Number(r.hours || 0).toFixed(3)}</td>
             <td class="mono">${money(r.cents)}</td>
           </tr>`).join("")}
@@ -415,17 +377,17 @@ function hoursLabel(h) {
 }
 
 function upstreamTable(rows) {
-  if (!rows?.length) return `<p class="lead">No running instances on the Massed account. Massed’s API only lists currently rented VMs — past usage is not returned.</p>`;
+  if (!rows?.length) return `<p class="lead">Nothing running on Massed.</p>`;
   return `
     <table>
       <thead><tr><th>Name</th><th>SKU</th><th>Status</th><th>Uptime</th><th>$/hr</th><th>Accrued</th></tr></thead>
       <tbody>
         ${rows.map((r) => `
           <tr>
-            <td class="mono">${esc(r.name)}<div class="s">${esc(r.uuid || "")}</div></td>
+            <td class="mono">${esc(r.name)}</td>
             <td class="mono">${esc(r.productName || "")}</td>
             <td><span class="pill ${r.status === "rented" || r.status === "running" ? "run" : "off"}">${esc(r.status || "")}</span></td>
-            <td class="mono">${esc(hoursLabel(r.uptimeHours))}<div class="s">${esc(fmt(r.created))}</div></td>
+            <td class="mono">${esc(hoursLabel(r.uptimeHours))}</td>
             <td class="mono">${money(r.priceCentsPerHour || 0)}</td>
             <td class="mono">${money(r.accumulatedCents || 0)}</td>
           </tr>`).join("")}
@@ -435,7 +397,7 @@ function upstreamTable(rows) {
 }
 
 function usageTable(rows, showEmail = false) {
-  if (!rows?.length) return `<p class="lead">No usage events yet.</p>`;
+  if (!rows?.length) return `<p class="lead">No events yet.</p>`;
   return `
     <table>
       <thead><tr>
@@ -459,10 +421,24 @@ function usageTable(rows, showEmail = false) {
 }
 
 function bindView() {
+  $("#match-form")?.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const query = new FormData(e.target).get("query") || "";
+    state.matchQuery = String(query);
+    state.matching = true;
+    state.flash = "";
+    render();
+    try {
+      state.match = await api("/api/match", { method: "POST", body: JSON.stringify({ query: state.matchQuery }) });
+    } catch (err) {
+      state.flash = err.message;
+    }
+    state.matching = false;
+    render();
+  });
   $("#watch-now")?.addEventListener("click", async () => {
     try {
       await api("/api/admin/meter", { method: "POST" });
-      state.flash = "Massed sample saved.";
       await loadTab();
     } catch (err) {
       state.flash = err.message;
@@ -489,11 +465,10 @@ function bindView() {
   }
   for (const b of document.querySelectorAll("[data-launch]")) {
     b.addEventListener("click", async () => {
-      const imageId = Number($("#image-id")?.value || 0) || undefined;
       try {
         await api("/api/instances", {
           method: "POST",
-          body: JSON.stringify({ productName: b.dataset.launch, imageId }),
+          body: JSON.stringify({ productName: b.dataset.launch }),
         });
         state.tab = "machines";
         await loadTab();
@@ -550,9 +525,7 @@ async function loadTab() {
     const me = await api("/api/me");
     state.user = me.user;
     state.massed = me.massed || null;
-    if (state.tab === "overview") {
-      /* massed snapshot already on /api/me */
-    } else if (state.tab === "usage") {
+    if (state.tab === "usage") {
       const path = state.user.role === "admin" ? "/api/admin/usage" : "/api/usage";
       const u = await api(path);
       state.usage = u.events || [];
@@ -561,8 +534,6 @@ async function loadTab() {
       if (u.watch) state.watch = u.watch;
     } else if (state.tab === "machines") {
       state.instances = (await api("/api/instances")).instances;
-    } else if (state.tab === "catalog") {
-      state.inventory = await api("/api/inventory");
     } else if (state.tab === "keys") {
       state.keys = (await api("/api/keys")).keys;
     } else if (state.tab === "admin") {

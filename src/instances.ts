@@ -13,6 +13,20 @@ export type LaunchBody = {
   sshPublicKey?: string;
 };
 
+function pickDefaultImage(images: { vm_image_id: number; vm_image_name: string }[]): number | undefined {
+  const score = (name: string) => {
+    const n = name.toLowerCase();
+    let s = 0;
+    if (n.includes("ubuntu")) s += 3;
+    if (n.includes("cuda")) s += 3;
+    if (n.includes("pytorch") || n.includes("torch")) s += 2;
+    if (n.includes("22.04") || n.includes("24.04")) s += 1;
+    return s;
+  };
+  const ranked = [...images].sort((a, b) => score(b.vm_image_name) - score(a.vm_image_name));
+  return ranked[0]?.vm_image_id;
+}
+
 function activeStatuses(): string[] {
   return ["launching", "running"];
 }
@@ -35,7 +49,7 @@ export async function handleLaunch(env: Env, ctx: AuthContext, body: LaunchBody)
   assertCanLaunch(ctx.user, sku, await runningCount(env, ctx.user.id));
 
   const images = await listImages(env);
-  const imageId = body.imageId ?? images[0]?.vm_image_id;
+  const imageId = body.imageId ?? pickDefaultImage(images);
   const label = (body.instanceName ?? `${productName}`).replace(/[^a-zA-Z0-9._-]/g, "-").slice(0, 40);
   const instanceName = `rl_${ctx.user.id.slice(0, 8)}_${label}`.slice(0, 60);
   const regionName = body.regionName?.trim() || "any";
