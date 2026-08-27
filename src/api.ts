@@ -5,6 +5,7 @@ import { getAccountSnapshot, getBilling, listImages, listInventory, listRunningI
 import { HttpError, filterInventory, parseGpus } from "./policy";
 import { handleMcp } from "./mcp";
 import { tickMeter } from "./meter";
+import { massedWatchReport } from "./watch";
 
 function json(data: unknown, init: ResponseInit = {}): Response {
   const headers = new Headers(init.headers);
@@ -197,8 +198,16 @@ export async function handleRequest(request: Request, env: Env, ctx: ExecutionCo
 
     if (path === "/api/admin/usage" && method === "GET") {
       await requireAdmin(env, request);
-      const [report, massed] = await Promise.all([usageReport(env, null), getAccountSnapshot(env)]);
-      return json({ ...report, massed });
+      const [report, massed, watch] = await Promise.all([
+        usageReport(env, null),
+        getAccountSnapshot(env),
+        massedWatchReport(env).catch(() => ({
+          vms: [],
+          ticks: [],
+          summary: { cents: 0, hours: 0, vm_count: 0 },
+        })),
+      ]);
+      return json({ ...report, massed, watch });
     }
 
     if (path === "/api/admin/fleet" && method === "GET") {

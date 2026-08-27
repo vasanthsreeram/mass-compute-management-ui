@@ -85,7 +85,12 @@ npx wrangler secret put DATA_KEY
 
 ## Metering
 
-Cron every 5 minutes: debit `price_cents_per_hour × elapsed` from a tenant’s proxy budget. At 0, their running VMs are terminated. Admins are not killed by proxy budget. Massed still bills the operator (min 1 hour).
+Cron every 5 minutes:
+
+1. Debit `price_cents_per_hour × elapsed` from a tenant’s proxy budget. At 0, their running VMs are terminated. Admins are not killed by proxy budget.
+2. **Massed watch:** list currently running VMs on the operator account, upsert them in D1, accrue estimated $ from the last sample, and mark VMs `ended` when they disappear. That is our history — Massed does not return past usage.
+
+Massed still bills the operator (min 1 hour). Watch $ is an estimate from samples, not an invoice.
 
 ## Security
 

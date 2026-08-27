@@ -1,5 +1,6 @@
 import { audit } from "./db";
 import { terminateInstances } from "./massed";
+import { snapshotMassed } from "./watch";
 
 type Running = {
   id: string;
@@ -72,5 +73,13 @@ export async function tickMeter(env: Env): Promise<{ billed: number; killed: num
     killed += ids.length;
   }
 
-  return { billed, killed };
+  let watch: { running: number; burnCentsPerHour: number; opened: number; closed: number; error: string | null } | null =
+    null;
+  try {
+    watch = await snapshotMassed(env);
+  } catch (err) {
+    console.error(JSON.stringify({ message: "massed watch failed", error: String(err) }));
+  }
+
+  return { billed, killed, watch };
 }

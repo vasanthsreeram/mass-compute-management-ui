@@ -11,6 +11,7 @@ const state = {
   instances: [],
   usage: [],
   usageSummary: { spent_cents: 0, hours: 0, event_count: 0, by_sku: [], by_user: [] },
+  watch: { vms: [], ticks: [], summary: { cents: 0, hours: 0, vm_count: 0 } },
   keys: [],
   adminUsers: [],
   adminDetail: null,
@@ -167,17 +168,23 @@ function usageView() {
   return `
     <h1>Usage</h1>
     <p class="lead">${isAdmin
-      ? "Live Massed: running VMs only (their API has no past-usage ledger). Below that: proxy metering per tenant."
+      ? "Massed has no past-usage API. This Worker polls running VMs every 5 minutes and keeps its own ledger (including after they terminate). Proxy tenant metering is separate."
       : "Timestamped debit events for VMs you launched through this proxy."}</p>
     <div class="grid stats">
       <div class="card"><div class="k">Metered spend</div><div class="v">${money(s.spent_cents)}</div><div class="s">${s.event_count} events</div></div>
       <div class="card"><div class="k">Hours</div><div class="v">${Number(s.hours || 0).toFixed(2)}</div></div>
       ${isAdmin ? `<div class="card"><div class="k">Massed burn now</div><div class="v">${money(m?.burnCentsPerHour || 0)}/hr</div><div class="s">${m?.running ?? 0} running · accrued ${money(m?.accumulatedCents || 0)}</div></div>` : ""}
+      ${isAdmin ? `<div class="card"><div class="k">Watched Massed spend</div><div class="v">${money(state.watch?.summary?.cents || 0)}</div><div class="s">${state.watch?.summary?.vm_count || 0} VMs sampled · ${Number(state.watch?.summary?.hours || 0).toFixed(2)} h</div></div>` : ""}
     </div>
     ${isAdmin ? `
     <div class="card" style="margin-top:16px">
       <h2>Massed running (live)</h2>
+      <div class="row" style="margin-bottom:12px"><button class="primary slim" id="watch-now">Sample Massed now</button></div>
       ${upstreamTable(m?.instances || [])}
+    </div>
+    <div class="card" style="margin-top:16px">
+      <h2>Massed watch history</h2>
+      ${watchVmTable(state.watch?.vms || [])}
     </div>` : ""}
     ${s.by_sku?.length ? `
     <div class="card" style="margin-top:16px">
@@ -378,6 +385,27 @@ function instanceTable(rows, actions, showEmail = false) {
   `;
 }
 
+function watchVmTable(rows) {
+  if (!rows?.length) return `<p class="lead">No samples yet. Cron polls Massed every 5 minutes, or use Sample Massed now.</p>`;
+  return `
+    <table>
+      <thead><tr><th>Name</th><th>SKU</th><th>Status</th><th>First seen</th><th>Last seen</th><th>Hours</th><th>Est. $</th></tr></thead>
+      <tbody>
+        ${rows.map((r) => `
+          <tr>
+            <td class="mono">${esc(r.name)}<div class="s">${esc(r.uuid)}</div></td>
+            <td class="mono">${esc(r.product_name || "")}</td>
+            <td><span class="pill ${r.ended_at ? "off" : "run"}">${esc(r.ended_at ? "ended" : r.status)}</span></td>
+            <td class="mono">${esc(fmt(r.first_seen_at))}</td>
+            <td class="mono">${esc(fmt(r.last_seen_at))}${r.ended_at ? `<div class="s">ended ${esc(fmt(r.ended_at))}</div>` : ""}</td>
+            <td class="mono">${Number(r.hours || 0).toFixed(3)}</td>
+            <td class="mono">${money(r.cents)}</td>
+          </tr>`).join("")}
+      </tbody>
+    </table>
+  `;
+}
+
 function hoursLabel(h) {
   const n = Number(h || 0);
   if (n <= 0) return "—";
@@ -431,6 +459,16 @@ function usageTable(rows, showEmail = false) {
 }
 
 function bindView() {
+  $("#watch-now")?.addEventListener("click", async () => {
+    try {
+      await api("/api/admin/meter", { method: "POST" });
+      state.flash = "Massed sample saved.";
+      await loadTab();
+    } catch (err) {
+      state.flash = err.message;
+      render();
+    }
+  });
   $("#key-form")?.addEventListener("submit", async (e) => {
     e.preventDefault();
     const name = new FormData(e.target).get("name");
@@ -520,6 +558,7 @@ async function loadTab() {
       state.usage = u.events || [];
       state.usageSummary = u.summary || { spent_cents: 0, hours: 0, event_count: 0, by_sku: [], by_user: [] };
       if (u.massed) state.massed = u.massed;
+      if (u.watch) state.watch = u.watch;
     } else if (state.tab === "machines") {
       state.instances = (await api("/api/instances")).instances;
     } else if (state.tab === "catalog") {
