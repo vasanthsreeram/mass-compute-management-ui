@@ -1,7 +1,12 @@
 {
-  "name": "gpu-proxy",
-  "private": true,
-  "description": "Mass Compute Management UI — multi-tenant GPU rental proxy in front of Massed Compute",
+  "name": "massed-compute-management-ui",
+  "private": false,
+  "license": "MIT",
+  "description": "Massed Compute Management UI — multi-tenant GPU rental proxy in front of one Massed Compute account",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/vasanthsreeram/mass-compute-management-ui.git"
+  },
   "scripts": {
     "dev": "wrangler dev --port 8787",
     "deploy": "wrangler deploy",

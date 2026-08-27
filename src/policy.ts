@@ -43,7 +43,7 @@ export function assertCanLaunch(
   if (runningCount >= user.max_concurrent) {
     throw new HttpError(403, `Concurrent VM cap reached (${user.max_concurrent})`);
   }
-  if (user.credit_cents < sku.priceCentsPerHour) {
+  if (user.role !== "admin" && user.credit_cents < sku.priceCentsPerHour) {
     throw new HttpError(402, "Not enough credit for one hour of this GPU");
   }
   return pub;

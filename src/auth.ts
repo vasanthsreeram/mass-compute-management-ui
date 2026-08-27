@@ -71,7 +71,7 @@ export async function registerUser(
     password_hash,
     salt,
     role: admin ? "admin" : "user",
-    credit_cents: admin ? 100_000 : 0,
+    credit_cents: 0,
     spent_cents: 0,
     allowed_gpus: admin ? JSON.stringify(["*"]) : JSON.stringify([]),
     max_concurrent: admin ? 8 : 1,

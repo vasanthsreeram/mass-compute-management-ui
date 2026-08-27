@@ -171,7 +171,24 @@ export type RemoteInstance = {
   created: string | null;
   productName: string | null;
   imageName: string | null;
+  priceCentsPerHour: number;
+  uptimeHours: number;
+  accumulatedCents: number;
 };
+
+function dollarsToCents(raw: unknown): number {
+  if (raw == null || raw === "") return 0;
+  const n = typeof raw === "string" ? Number(raw) : Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return n > 20 ? Math.round(n) : Math.round(n * 100);
+}
+
+function hoursSince(iso: string | null): number {
+  if (!iso) return 0;
+  const t = Date.parse(iso);
+  if (!Number.isFinite(t) || t >= Date.now()) return 0;
+  return (Date.now() - t) / 3_600_000;
+}
 
 export async function listRunningInstances(env: Env): Promise<RemoteInstance[]> {
   if (mockEnabled(env)) return [];
@@ -181,13 +198,19 @@ export async function listRunningInstances(env: Env): Promise<RemoteInstance[]> 
   return (data.runningInstances ?? []).map((inst) => {
     const product = (inst.product ?? {}) as Record<string, unknown>;
     const image = (inst.image ?? {}) as Record<string, unknown>;
+    const created = inst.created ? String(inst.created) : null;
+    const priceCentsPerHour = dollarsToCents(product.final_price_hr) || dollarsToCents(product.price_hr);
+    const uptimeHours = hoursSince(created);
     return {
       uuid: String(inst.uuid ?? ""),
       name: String(inst.name ?? ""),
       status: String(inst.status ?? ""),
-      created: inst.created ? String(inst.created) : null,
+      created,
       productName: product.name ? String(product.name) : null,
       imageName: image.name ? String(image.name) : null,
+      priceCentsPerHour,
+      uptimeHours,
+      accumulatedCents: Math.round(uptimeHours * priceCentsPerHour),
     };
   });
 }
@@ -197,6 +220,91 @@ export async function getBilling(env: Env): Promise<Record<string, unknown> | nu
   const res = await mcFetch(env, "/account/billing");
   if (!res.ok) return null;
   return (await res.json()) as Record<string, unknown>;
+}
+
+export type MassedBilling = {
+  billingMethod: string | null;
+  rechargeAmountCents: number;
+  rechargeThresholdCents: number;
+};
+
+export type MassedAccount = {
+  connected: boolean;
+  mock: boolean;
+  tokenValid: boolean;
+  running: number;
+  burnCentsPerHour: number;
+  accumulatedCents: number;
+  longRunning24h: number;
+  longRunning7d: number;
+  billing: MassedBilling | null;
+  instances: RemoteInstance[];
+  error: string | null;
+};
+
+function parseBilling(raw: Record<string, unknown> | null): MassedBilling | null {
+  if (!raw) return null;
+  return {
+    billingMethod: raw.billingMethod ? String(raw.billingMethod) : null,
+    rechargeAmountCents: Number(raw.rechargeAmountCents ?? 0) || 0,
+    rechargeThresholdCents: Number(raw.rechargeThresholdCents ?? 0) || 0,
+  };
+}
+
+export async function getAccountSnapshot(env: Env): Promise<MassedAccount> {
+  const empty: MassedAccount = {
+    connected: false,
+    mock: mockEnabled(env),
+    tokenValid: false,
+    running: 0,
+    burnCentsPerHour: 0,
+    accumulatedCents: 0,
+    longRunning24h: 0,
+    longRunning7d: 0,
+    billing: null,
+    instances: [],
+    error: null,
+  };
+  if (mockEnabled(env)) {
+    return { ...empty, mock: true, error: "MOCK_MASSED is on — not talking to Massed." };
+  }
+  if (!env.MASSED_COMPUTE_API_KEY) {
+    return { ...empty, error: "MASSED_COMPUTE_API_KEY is not set." };
+  }
+  try {
+    const [tokenValid, instances, skus, billingRaw] = await Promise.all([
+      validateToken(env),
+      listRunningInstances(env),
+      listInventory(env),
+      getBilling(env),
+    ]);
+    const price = new Map(skus.map((s) => [s.productName, s.priceCentsPerHour]));
+    const priced = instances.map((i) => {
+      const rate = i.priceCentsPerHour || price.get(i.productName || "") || 0;
+      return {
+        ...i,
+        priceCentsPerHour: rate,
+        accumulatedCents: Math.round(i.uptimeHours * rate),
+      };
+    });
+    const burnCentsPerHour = priced.reduce((n, i) => n + i.priceCentsPerHour, 0);
+    const accumulatedCents = priced.reduce((n, i) => n + i.accumulatedCents, 0);
+    return {
+      connected: tokenValid,
+      mock: false,
+      tokenValid,
+      running: priced.length,
+      burnCentsPerHour,
+      accumulatedCents,
+      longRunning24h: priced.filter((i) => i.uptimeHours >= 24).length,
+      longRunning7d: priced.filter((i) => i.uptimeHours >= 24 * 7).length,
+      billing: parseBilling(billingRaw),
+      instances: priced,
+      error: tokenValid ? null : "Massed token was rejected.",
+    };
+  } catch (e) {
+    return { ...empty, error: e instanceof Error ? e.message : "Massed request failed" };
+  }
 }
 
 export async function validateToken(env: Env): Promise<boolean> {

@@ -27,7 +27,10 @@ export async function tickMeter(env: Env): Promise<{ billed: number; killed: num
     const cents = Math.max(1, Math.ceil(hours * inst.price_cents_per_hour));
     await env.DB.batch([
       env.DB.prepare(
-        "UPDATE users SET credit_cents = MAX(0, credit_cents - ?), spent_cents = spent_cents + ? WHERE id = ?",
+        `UPDATE users SET
+           credit_cents = CASE WHEN role = 'admin' THEN credit_cents ELSE MAX(0, credit_cents - ?) END,
+           spent_cents = spent_cents + ?
+         WHERE id = ?`,
       ).bind(cents, cents, inst.user_id),
       env.DB.prepare("UPDATE instances SET last_metered_at = ? WHERE id = ?").bind(nowIso, inst.id),
       env.DB.prepare(
@@ -35,10 +38,10 @@ export async function tickMeter(env: Env): Promise<{ billed: number; killed: num
       ).bind(crypto.randomUUID(), inst.user_id, inst.id, cents, hours, nowIso),
     ]);
     billed += 1;
-    const user = await env.DB.prepare("SELECT credit_cents FROM users WHERE id = ?")
+    const user = await env.DB.prepare("SELECT credit_cents, role FROM users WHERE id = ?")
       .bind(inst.user_id)
-      .first<{ credit_cents: number }>();
-    if ((user?.credit_cents ?? 0) <= 0) {
+      .first<{ credit_cents: number; role: string }>();
+    if (user?.role !== "admin" && (user?.credit_cents ?? 0) <= 0) {
       const list = killByUser.get(inst.user_id) ?? [];
       list.push(inst.id);
       killByUser.set(inst.user_id, list);

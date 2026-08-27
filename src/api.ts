@@ -1,7 +1,7 @@
 import { createApiKey, createSession, destroySession, loginUser, publicUser, registerUser, requireAdmin, requireAuth, sessionCookie, clearSessionCookie } from "./auth";
 import { audit, getUserById, publicUser as toPublic, type UserRow } from "./db";
 import { handleLaunch, handleListInstances, handleRestart, handleTerminate, instanceDetail } from "./instances";
-import { getBilling, listImages, listInventory, listRunningInstances } from "./massed";
+import { getAccountSnapshot, getBilling, listImages, listInventory, listRunningInstances } from "./massed";
 import { HttpError, filterInventory, parseGpus } from "./policy";
 import { handleMcp } from "./mcp";
 import { tickMeter } from "./meter";
@@ -89,7 +89,8 @@ export async function handleRequest(request: Request, env: Env, ctx: ExecutionCo
 
     if (path === "/api/me" && method === "GET") {
       const auth = await requireAuth(env, request);
-      return json({ user: auth.public, via: auth.via });
+      const massed = auth.user.role === "admin" ? await getAccountSnapshot(env) : null;
+      return json({ user: auth.public, via: auth.via, massed });
     }
 
     if (path === "/api/inventory" && method === "GET") {
@@ -132,14 +133,7 @@ export async function handleRequest(request: Request, env: Env, ctx: ExecutionCo
 
     if (path === "/api/usage" && method === "GET") {
       const auth = await requireAuth(env, request);
-      const rows = await env.DB.prepare(
-        `SELECT u.id, u.instance_id, u.cents, u.hours, u.created_at, i.name AS instance_name, i.product_name
-         FROM usage_events u LEFT JOIN instances i ON i.id = u.instance_id
-         WHERE u.user_id = ? ORDER BY u.created_at DESC LIMIT 100`,
-      )
-        .bind(auth.user.id)
-        .all();
-      return json({ events: rows.results ?? [] });
+      return json(await usageReport(env, auth.user.id));
     }
 
     if (path === "/api/keys" && method === "GET") {
@@ -199,6 +193,12 @@ export async function handleRequest(request: Request, env: Env, ctx: ExecutionCo
       const auth = await requireAdmin(env, request);
       const body = await readJson(request);
       return json(await adminPatchUser(env, auth.user.id, adminUser[1], body));
+    }
+
+    if (path === "/api/admin/usage" && method === "GET") {
+      await requireAdmin(env, request);
+      const [report, massed] = await Promise.all([usageReport(env, null), getAccountSnapshot(env)]);
+      return json({ ...report, massed });
     }
 
     if (path === "/api/admin/fleet" && method === "GET") {
@@ -313,6 +313,59 @@ async function adminPatchUser(
   const next = await getUserById(env.DB, userId);
   if (!next) throw new HttpError(404, "User not found");
   return { user: toPublic(next) };
+}
+
+type UsageEvent = {
+  id: string;
+  instance_id: string;
+  cents: number;
+  hours: number;
+  created_at: string;
+  instance_name: string | null;
+  product_name: string | null;
+  email?: string;
+};
+
+async function usageReport(env: Env, userId: string | null) {
+  const sql = userId
+    ? `SELECT u.id, u.instance_id, u.cents, u.hours, u.created_at, i.name AS instance_name, i.product_name
+       FROM usage_events u LEFT JOIN instances i ON i.id = u.instance_id
+       WHERE u.user_id = ? ORDER BY u.created_at DESC LIMIT 500`
+    : `SELECT u.id, u.instance_id, u.cents, u.hours, u.created_at, i.name AS instance_name, i.product_name, usr.email
+       FROM usage_events u
+       LEFT JOIN instances i ON i.id = u.instance_id
+       JOIN users usr ON usr.id = u.user_id
+       ORDER BY u.created_at DESC LIMIT 500`;
+  const stmt = userId ? env.DB.prepare(sql).bind(userId) : env.DB.prepare(sql);
+  const rows = await stmt.all<UsageEvent>();
+  const events = rows.results ?? [];
+  const spent_cents = events.reduce((n, e) => n + Number(e.cents || 0), 0);
+  const hours = events.reduce((n, e) => n + Number(e.hours || 0), 0);
+  const bySku = new Map<string, { product_name: string; cents: number; hours: number }>();
+  const byUser = new Map<string, { email: string; cents: number; hours: number }>();
+  for (const e of events) {
+    const sku = e.product_name || "unknown";
+    const s = bySku.get(sku) ?? { product_name: sku, cents: 0, hours: 0 };
+    s.cents += Number(e.cents || 0);
+    s.hours += Number(e.hours || 0);
+    bySku.set(sku, s);
+    if (e.email) {
+      const u = byUser.get(e.email) ?? { email: e.email, cents: 0, hours: 0 };
+      u.cents += Number(e.cents || 0);
+      u.hours += Number(e.hours || 0);
+      byUser.set(e.email, u);
+    }
+  }
+  return {
+    events,
+    summary: {
+      spent_cents,
+      hours,
+      event_count: events.length,
+      by_sku: [...bySku.values()].sort((a, b) => b.cents - a.cents),
+      by_user: [...byUser.values()].sort((a, b) => b.cents - a.cents),
+    },
+  };
 }
 
 function cors(_request: Request): HeadersInit {

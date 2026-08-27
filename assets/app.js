@@ -5,10 +5,12 @@ const state = {
   user: null,
   tab: "overview",
   meta: { mock: true },
+  massed: null,
   upstream: [],
   inventory: { gpus: [], images: [] },
   instances: [],
   usage: [],
+  usageSummary: { spent_cents: 0, hours: 0, event_count: 0, by_sku: [], by_user: [] },
   keys: [],
   adminUsers: [],
   adminDetail: null,
@@ -42,9 +44,10 @@ function render() {
   app.innerHTML = `
     <div class="wrap">
       <header class="top">
-        <div class="brand">MASS COMPUTE <small>Management UI</small></div>
+        <div class="brand">MASSED COMPUTE <small>Management UI</small></div>
         <nav class="nav">
           ${tabBtn("overview", "Overview")}
+          ${tabBtn("usage", "Usage")}
           ${tabBtn("machines", "Machines")}
           ${tabBtn("catalog", "Catalog")}
           ${tabBtn("keys", "Agent keys")}
@@ -82,9 +85,9 @@ function tabBtn(id, label) {
 function renderAuth() {
   app.innerHTML = `
     <div class="auth">
-      <div class="brand">MASS COMPUTE <small>Management UI</small></div>
+      <div class="brand">MASSED COMPUTE <small>Management UI</small></div>
       <h1>Sign in</h1>
-      <p class="lead">Email + password, hosted on Cloudflare. First account becomes admin.</p>
+      <p class="lead">Email + password. First account becomes admin.</p>
       ${state.flash ? `<div class="flash">${esc(state.flash)}</div>` : ""}
       <form id="auth-form">
         <label>Email</label>
@@ -96,7 +99,7 @@ function renderAuth() {
           <button class="ghost" type="submit" data-mode="register">Create account</button>
         </div>
       </form>
-      <p class="lead" style="margin-top:18px">GPU VMs are billed against your credit. Upstream capacity is Massed Compute.</p>
+      <p class="lead" style="margin-top:18px">GPU VMs are billed against your proxy budget. Upstream capacity is Massed Compute.</p>
     </div>
   `;
   const form = $("#auth-form");
@@ -120,22 +123,92 @@ function renderAuth() {
   });
 }
 
-function view() {
-  if (state.tab === "overview") {
+function overviewView() {
+  const isAdmin = state.user.role === "admin";
+  const m = state.massed;
+  const recharge = m?.billing || {};
+  if (isAdmin) {
+    const live = !!m?.connected;
     return `
       <h1>${esc(state.user.email)}</h1>
+      <p class="lead">${live
+        ? "Live Massed Compute account (the operator key). Massed does not expose wallet dollars over API — this is burn, running VMs, and recharge settings."
+        : `Not reading the Massed account. ${esc(m?.error || "Check MASSED_COMPUTE_API_KEY.")}`}</p>
       <div class="grid stats">
-        <div class="card"><div class="k">Credit left</div><div class="v">${money(state.user.credit_cents)}</div></div>
-        <div class="card"><div class="k">Spent</div><div class="v">${money(state.user.spent_cents)}</div></div>
-        <div class="card"><div class="k">Role</div><div class="v">${esc(state.user.role)}</div><div class="s">max ${state.user.max_concurrent} concurrent</div></div>
-        <div class="card"><div class="k">Allowed GPUs</div><div class="v" style="font-size:14px">${esc(state.user.allowed_gpus.join(", ") || "none")}</div></div>
+        <div class="card"><div class="k">Massed status</div><div class="v" style="font-size:18px">${live ? "Connected" : "Offline"}</div><div class="s">${m?.mock ? "Mock mode" : "Token validated against Massed"}</div></div>
+        <div class="card"><div class="k">Massed burn</div><div class="v">${money(m?.burnCentsPerHour || 0)}/hr</div><div class="s">Sum of running SKUs</div></div>
+        <div class="card"><div class="k">Running VMs</div><div class="v">${m?.running ?? 0}</div><div class="s">${m?.longRunning24h ?? 0} over 24h · ${m?.longRunning7d ?? 0} over 7d</div></div>
+        <div class="card"><div class="k">Accrued on running</div><div class="v">${money(m?.accumulatedCents || 0)}</div><div class="s">uptime × $/hr — terminated VMs are not in the API</div></div>
+        <div class="card"><div class="k">Auto-recharge</div><div class="v">${money(Number(recharge.rechargeAmountCents || 0))}</div><div class="s">when Massed balance hits ${money(Number(recharge.rechargeThresholdCents || 0))}</div></div>
+        <div class="card"><div class="k">Billing method</div><div class="v" style="font-size:18px">${esc(recharge.billingMethod || "—")}</div><div class="s">Wallet $ is only on Massed’s billing page</div></div>
       </div>
       <div class="card" style="margin-top:16px">
-        <h2>Recent usage</h2>
-        ${usageTable(state.usage)}
+        <h2>Massed running VMs</h2>
+        ${upstreamTable(m?.instances || [])}
       </div>
     `;
   }
+  return `
+    <h1>${esc(state.user.email)}</h1>
+    <p class="lead">This is your proxy budget, assigned by an admin. It is not the Massed wallet.</p>
+    <div class="grid stats">
+      <div class="card"><div class="k">Proxy budget left</div><div class="v">${money(state.user.credit_cents)}</div><div class="s">Allocated by an admin</div></div>
+      <div class="card"><div class="k">Spent</div><div class="v">${money(state.user.spent_cents)}</div></div>
+      <div class="card"><div class="k">Role</div><div class="v">${esc(state.user.role)}</div><div class="s">max ${state.user.max_concurrent} concurrent</div></div>
+      <div class="card"><div class="k">Allowed GPUs</div><div class="v" style="font-size:14px">${esc(state.user.allowed_gpus.join(", ") || "none")}</div></div>
+    </div>
+  `;
+}
+
+function usageView() {
+  const s = state.usageSummary || { spent_cents: 0, hours: 0, event_count: 0, by_sku: [], by_user: [] };
+  const isAdmin = state.user.role === "admin";
+  const m = state.massed;
+  return `
+    <h1>Usage</h1>
+    <p class="lead">${isAdmin
+      ? "Live Massed: running VMs only (their API has no past-usage ledger). Below that: proxy metering per tenant."
+      : "Timestamped debit events for VMs you launched through this proxy."}</p>
+    <div class="grid stats">
+      <div class="card"><div class="k">Metered spend</div><div class="v">${money(s.spent_cents)}</div><div class="s">${s.event_count} events</div></div>
+      <div class="card"><div class="k">Hours</div><div class="v">${Number(s.hours || 0).toFixed(2)}</div></div>
+      ${isAdmin ? `<div class="card"><div class="k">Massed burn now</div><div class="v">${money(m?.burnCentsPerHour || 0)}/hr</div><div class="s">${m?.running ?? 0} running · accrued ${money(m?.accumulatedCents || 0)}</div></div>` : ""}
+    </div>
+    ${isAdmin ? `
+    <div class="card" style="margin-top:16px">
+      <h2>Massed running (live)</h2>
+      ${upstreamTable(m?.instances || [])}
+    </div>` : ""}
+    ${s.by_sku?.length ? `
+    <div class="card" style="margin-top:16px">
+      <h2>By SKU</h2>
+      <table>
+        <thead><tr><th>SKU</th><th>Hours</th><th>Amount</th></tr></thead>
+        <tbody>
+          ${s.by_sku.map((r) => `<tr><td class="mono">${esc(r.product_name)}</td><td class="mono">${Number(r.hours || 0).toFixed(3)}</td><td class="mono">${money(r.cents)}</td></tr>`).join("")}
+        </tbody>
+      </table>
+    </div>` : ""}
+    ${isAdmin && s.by_user?.length ? `
+    <div class="card" style="margin-top:16px">
+      <h2>By user</h2>
+      <table>
+        <thead><tr><th>Email</th><th>Hours</th><th>Amount</th></tr></thead>
+        <tbody>
+          ${s.by_user.map((r) => `<tr><td>${esc(r.email)}</td><td class="mono">${Number(r.hours || 0).toFixed(3)}</td><td class="mono">${money(r.cents)}</td></tr>`).join("")}
+        </tbody>
+      </table>
+    </div>` : ""}
+    <div class="card" style="margin-top:16px">
+      <h2>Events</h2>
+      ${usageTable(state.usage, isAdmin)}
+    </div>
+  `;
+}
+
+function view() {
+  if (state.tab === "overview") return overviewView();
+  if (state.tab === "usage") return usageView();
   if (state.tab === "machines") {
     return `
       <h1>Machines</h1>
@@ -146,7 +219,7 @@ function view() {
     const images = state.inventory.images || [];
     return `
       <h1>Catalog</h1>
-      <p class="lead">Only SKUs on your allowlist are shown. Launch spends your credit; terminate destroys the disk.</p>
+      <p class="lead">Only SKUs on your allowlist are shown. Launch spends your proxy budget; terminate destroys the disk.</p>
       <div class="card">
         <table>
           <thead><tr><th>SKU</th><th>Specs</th><th>$/hr</th><th>Stock</th><th></th></tr></thead>
@@ -211,12 +284,12 @@ function renderAdmin() {
   const d = state.adminDetail;
   return `
     <h1>Admin</h1>
-    <p class="lead">Promote admins, set each user’s GPU allowlist, credit, and concurrent cap. Usage is timestamped per VM.</p>
+    <p class="lead">Promote admins, set each user’s GPU allowlist, proxy budget, and concurrent cap. Usage is timestamped per VM.</p>
     <div class="split">
       <div class="card">
         <h2>Users</h2>
         <table>
-          <thead><tr><th>Email</th><th>Role</th><th>Credit</th><th>Running</th></tr></thead>
+          <thead><tr><th>Email</th><th>Role</th><th>Proxy budget</th><th>Running</th></tr></thead>
           <tbody>
             ${state.adminUsers.map((u) => `
               <tr class="user-row" data-user="${u.id}">
@@ -256,7 +329,7 @@ function adminDetailHtml(d) {
         <option value="user" ${u.role === "user" ? "selected" : ""}>user</option>
         <option value="admin" ${u.role === "admin" ? "selected" : ""}>admin</option>
       </select>
-      <label>Credit (cents)</label>
+      <label>Proxy budget (cents) — not the Massed wallet</label>
       <input name="credit_cents" type="number" min="0" value="${u.credit_cents}" />
       <label>Max concurrent VMs</label>
       <input name="max_concurrent" type="number" min="0" max="32" value="${u.max_concurrent}" />
@@ -305,33 +378,48 @@ function instanceTable(rows, actions, showEmail = false) {
   `;
 }
 
+function hoursLabel(h) {
+  const n = Number(h || 0);
+  if (n <= 0) return "—";
+  if (n < 1) return `${Math.round(n * 60)}m`;
+  if (n < 48) return `${n.toFixed(1)}h`;
+  return `${(n / 24).toFixed(1)}d`;
+}
+
 function upstreamTable(rows) {
-  if (!rows?.length) return `<p class="lead">No running instances on the Massed account (or the key is not bound).</p>`;
+  if (!rows?.length) return `<p class="lead">No running instances on the Massed account. Massed’s API only lists currently rented VMs — past usage is not returned.</p>`;
   return `
     <table>
-      <thead><tr><th>Name</th><th>SKU</th><th>Status</th><th>Created</th></tr></thead>
+      <thead><tr><th>Name</th><th>SKU</th><th>Status</th><th>Uptime</th><th>$/hr</th><th>Accrued</th></tr></thead>
       <tbody>
         ${rows.map((r) => `
           <tr>
             <td class="mono">${esc(r.name)}<div class="s">${esc(r.uuid || "")}</div></td>
             <td class="mono">${esc(r.productName || "")}</td>
             <td><span class="pill ${r.status === "rented" || r.status === "running" ? "run" : "off"}">${esc(r.status || "")}</span></td>
-            <td class="mono">${esc(fmt(r.created))}</td>
+            <td class="mono">${esc(hoursLabel(r.uptimeHours))}<div class="s">${esc(fmt(r.created))}</div></td>
+            <td class="mono">${money(r.priceCentsPerHour || 0)}</td>
+            <td class="mono">${money(r.accumulatedCents || 0)}</td>
           </tr>`).join("")}
       </tbody>
     </table>
   `;
 }
 
-function usageTable(rows) {
+function usageTable(rows, showEmail = false) {
   if (!rows?.length) return `<p class="lead">No usage events yet.</p>`;
   return `
     <table>
-      <thead><tr><th>When</th><th>VM</th><th>SKU</th><th>Hours</th><th>Amount</th></tr></thead>
+      <thead><tr>
+        <th>When</th>
+        ${showEmail ? "<th>User</th>" : ""}
+        <th>VM</th><th>SKU</th><th>Hours</th><th>Amount</th>
+      </tr></thead>
       <tbody>
         ${rows.map((e) => `
           <tr>
             <td class="mono">${esc(fmt(e.created_at))}</td>
+            ${showEmail ? `<td>${esc(e.email || "")}</td>` : ""}
             <td class="mono">${esc(e.instance_name || e.instance_id || "")}</td>
             <td class="mono">${esc(e.product_name || "")}</td>
             <td class="mono">${Number(e.hours || 0).toFixed(3)}</td>
@@ -423,9 +511,15 @@ async function loadTab() {
   try {
     const me = await api("/api/me");
     state.user = me.user;
+    state.massed = me.massed || null;
     if (state.tab === "overview") {
-      const u = await api("/api/usage");
-      state.usage = u.events;
+      /* massed snapshot already on /api/me */
+    } else if (state.tab === "usage") {
+      const path = state.user.role === "admin" ? "/api/admin/usage" : "/api/usage";
+      const u = await api(path);
+      state.usage = u.events || [];
+      state.usageSummary = u.summary || { spent_cents: 0, hours: 0, event_count: 0, by_sku: [], by_user: [] };
+      if (u.massed) state.massed = u.massed;
     } else if (state.tab === "machines") {
       state.instances = (await api("/api/instances")).instances;
     } else if (state.tab === "catalog") {
