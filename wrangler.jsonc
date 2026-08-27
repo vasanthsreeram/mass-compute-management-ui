@@ -28,7 +28,6 @@
     "crons": ["*/5 * * * *"]
   },
   "vars": {
-    "REFERRAL_URL": "https://vm.massedcompute.com/signup?referral=a6Cjx5Rdeg",
     "MOCK_MASSED": "0"
   }
 }

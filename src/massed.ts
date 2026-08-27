@@ -72,6 +72,7 @@ function mockEnabled(env: Env): boolean {
 async function mcFetch(env: Env, path: string, init: RequestInit = {}): Promise<Response> {
   const headers = new Headers(init.headers);
   headers.set("Authorization", `Bearer ${env.MASSED_COMPUTE_API_KEY}`);
+  headers.set("User-Agent", "MassComputeManagementUI/1.0");
   if (init.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
   return fetch(`${MASSED_BASE}${path}`, { ...init, headers });
 }
@@ -161,6 +162,47 @@ export async function terminateInstances(env: Env, uuids: string[]): Promise<voi
     body: JSON.stringify({ instanceUuids: real }),
   });
   if (!res.ok) throw new Error(`massed terminate ${res.status}`);
+}
+
+export type RemoteInstance = {
+  uuid: string;
+  name: string;
+  status: string;
+  created: string | null;
+  productName: string | null;
+  imageName: string | null;
+};
+
+export async function listRunningInstances(env: Env): Promise<RemoteInstance[]> {
+  if (mockEnabled(env)) return [];
+  const res = await mcFetch(env, "/instance");
+  if (!res.ok) throw new Error(`massed instances ${res.status}`);
+  const data = (await res.json()) as { runningInstances?: Record<string, unknown>[] };
+  return (data.runningInstances ?? []).map((inst) => {
+    const product = (inst.product ?? {}) as Record<string, unknown>;
+    const image = (inst.image ?? {}) as Record<string, unknown>;
+    return {
+      uuid: String(inst.uuid ?? ""),
+      name: String(inst.name ?? ""),
+      status: String(inst.status ?? ""),
+      created: inst.created ? String(inst.created) : null,
+      productName: product.name ? String(product.name) : null,
+      imageName: image.name ? String(image.name) : null,
+    };
+  });
+}
+
+export async function getBilling(env: Env): Promise<Record<string, unknown> | null> {
+  if (mockEnabled(env)) return null;
+  const res = await mcFetch(env, "/account/billing");
+  if (!res.ok) return null;
+  return (await res.json()) as Record<string, unknown>;
+}
+
+export async function validateToken(env: Env): Promise<boolean> {
+  if (mockEnabled(env)) return false;
+  const res = await mcFetch(env, "/account/token/validation", { method: "POST" });
+  return res.ok;
 }
 
 export async function getRemoteInstance(

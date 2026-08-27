@@ -1,7 +1,7 @@
 import { createApiKey, createSession, destroySession, loginUser, publicUser, registerUser, requireAdmin, requireAuth, sessionCookie, clearSessionCookie } from "./auth";
 import { audit, getUserById, publicUser as toPublic, type UserRow } from "./db";
 import { handleLaunch, handleListInstances, handleRestart, handleTerminate, instanceDetail } from "./instances";
-import { listImages, listInventory } from "./massed";
+import { getBilling, listImages, listInventory, listRunningInstances } from "./massed";
 import { HttpError, filterInventory, parseGpus } from "./policy";
 import { handleMcp } from "./mcp";
 import { tickMeter } from "./meter";
@@ -53,7 +53,6 @@ export async function handleRequest(request: Request, env: Env, ctx: ExecutionCo
 
     if (path === "/api/meta" && method === "GET") {
       return json({
-        referralUrl: env.REFERRAL_URL,
         mock: env.MOCK_MASSED === "1" || !env.MASSED_COMPUTE_API_KEY,
       });
     }
@@ -211,6 +210,12 @@ export async function handleRequest(request: Request, env: Env, ctx: ExecutionCo
          ORDER BY i.launched_at DESC LIMIT 200`,
       ).all();
       return json({ instances: rows.results ?? [] });
+    }
+
+    if (path === "/api/admin/upstream" && method === "GET") {
+      await requireAdmin(env, request);
+      const [instances, billing] = await Promise.all([listRunningInstances(env), getBilling(env)]);
+      return json({ instances, billing });
     }
 
     if (path === "/api/admin/meter" && method === "POST") {

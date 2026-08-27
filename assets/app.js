@@ -4,7 +4,8 @@ const app = $("#app");
 const state = {
   user: null,
   tab: "overview",
-  meta: { referralUrl: "https://vm.massedcompute.com/signup?referral=a6Cjx5Rdeg", mock: true },
+  meta: { mock: true },
+  upstream: [],
   inventory: { gpus: [], images: [] },
   instances: [],
   usage: [],
@@ -55,9 +56,7 @@ function render() {
       ${state.secret ? `<div class="ok secret">New key (copy now, shown once): ${esc(state.secret)}</div>` : ""}
       ${view()}
       <footer class="foot">
-        Need a Massed Compute account for the upstream bill?
-        <a href="${esc(state.meta.referralUrl)}" target="_blank" rel="noreferrer">Sign up with this referral</a>.
-        ${state.meta.mock ? " · Mock inventory (no live Massed key)." : ""}
+        ${state.meta.mock ? "Mock inventory (no live Massed key)." : "Live Massed Compute inventory."}
       </footer>
     </div>
   `;
@@ -98,7 +97,6 @@ function renderAuth() {
         </div>
       </form>
       <p class="lead" style="margin-top:18px">GPU VMs are billed against your credit. Upstream capacity is Massed Compute.</p>
-      <a href="${esc(state.meta.referralUrl)}" target="_blank" rel="noreferrer">Massed Compute referral signup</a>
     </div>
   `;
   const form = $("#auth-form");
@@ -235,8 +233,12 @@ function renderAdmin() {
       </div>
     </div>
     <div class="card" style="margin-top:16px">
-      <h2>Fleet</h2>
+      <h2>Proxy fleet</h2>
       ${instanceTable(state.fleet, false, true)}
+    </div>
+    <div class="card" style="margin-top:16px">
+      <h2>Massed account (live)</h2>
+      ${upstreamTable(state.upstream)}
     </div>
   `;
 }
@@ -297,6 +299,24 @@ function instanceTable(rows, actions, showEmail = false) {
                 : `<button class="linkish" data-restart="${r.id}">restart</button>
                    <button class="linkish danger" data-kill="${r.id}">terminate</button>`
             }</td>` : ""}
+          </tr>`).join("")}
+      </tbody>
+    </table>
+  `;
+}
+
+function upstreamTable(rows) {
+  if (!rows?.length) return `<p class="lead">No running instances on the Massed account (or the key is not bound).</p>`;
+  return `
+    <table>
+      <thead><tr><th>Name</th><th>SKU</th><th>Status</th><th>Created</th></tr></thead>
+      <tbody>
+        ${rows.map((r) => `
+          <tr>
+            <td class="mono">${esc(r.name)}<div class="s">${esc(r.uuid || "")}</div></td>
+            <td class="mono">${esc(r.productName || "")}</td>
+            <td><span class="pill ${r.status === "rented" || r.status === "running" ? "run" : "off"}">${esc(r.status || "")}</span></td>
+            <td class="mono">${esc(fmt(r.created))}</td>
           </tr>`).join("")}
       </tbody>
     </table>
@@ -413,14 +433,16 @@ async function loadTab() {
     } else if (state.tab === "keys") {
       state.keys = (await api("/api/keys")).keys;
     } else if (state.tab === "admin") {
-      const [users, fleet, inv] = await Promise.all([
+      const [users, fleet, inv, up] = await Promise.all([
         api("/api/admin/users"),
         api("/api/admin/fleet"),
         api("/api/admin/catalog"),
+        api("/api/admin/upstream"),
       ]);
       state.adminUsers = users.users;
       state.fleet = fleet.instances;
       state.inventory = inv;
+      state.upstream = up.instances || [];
     }
   } catch (err) {
     if (err.message === "Unauthorized") {

@@ -8,3 +8,8 @@ worker-configuration.d.ts
 .DS_Store
 dist/
 secrets.json
+.massed-key
+.session-secret
+.data-key
+.prod-admin
+.prod-pw
