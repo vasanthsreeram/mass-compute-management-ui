@@ -55,9 +55,9 @@ You cannot demote yourself or remove the last admin. Admins skip the proxy-budge
 
 ## Agent
 
-1. Log in → **Agent keys** → create a key.
-2. Copy `skill/gpu-proxy/` into the agent’s skills folder.
-3. Set `GPU_PROXY_URL` (your Worker origin) and `GPU_PROXY_API_KEY`.
+1. Log in → **Keys** → create a key.
+2. Click **Copy for agent** (fills this desk’s URL; includes the new key if you just created one).
+3. Paste into the agent, or save as `gpu-proxy/SKILL.md` in its skills folder.
 
 REST and `POST /mcp` use the same key. The agent only sees *that user’s* inventory and machines.
 

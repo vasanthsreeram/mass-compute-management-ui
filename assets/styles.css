@@ -101,3 +101,22 @@ button.linkish { background: none; border: 0; color: var(--accent); cursor: poin
 .match-alts { margin-top: 12px; font-size: 13px; color: var(--muted); }
 .match-alts button { margin-right: 8px; margin-top: 6px; }
 .hint { font-size: 12px; color: var(--muted); }
+
+.skill-head {
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 14px;
+  margin-bottom: 12px;
+}
+.skill-head h2 { margin: 0 0 4px; }
+.skill-head .primary { flex-shrink: 0; min-width: 132px; }
+.skill-preview {
+  max-height: 240px; margin: 0; white-space: pre-wrap; word-break: break-word;
+}
+.primary.copied, .ghost.copied { background: var(--run); color: #f4faf5; }
+.secret .k { font-family: var(--sans); font-size: 12px; margin-bottom: 6px; color: var(--run); }
+.secret-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.secret-row code { font-size: 12px; }
+.secret-row .ghost { flex-shrink: 0; color: var(--run); border-color: #c5d9c8; }
+@media (max-width: 640px) {
+  .skill-head, .secret-row { flex-direction: column; }
+  .skill-head .primary { width: 100%; }
+}

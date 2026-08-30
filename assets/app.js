@@ -21,6 +21,7 @@ const state = {
   matchQuery: "",
   match: null,
   matching: false,
+  skillMd: null,
 };
 
 async function api(path, opts = {}) {
@@ -95,8 +96,17 @@ function paintChrome() {
   if (!el) return;
   el.innerHTML = `
     ${state.flash ? `<div class="flash">${esc(state.flash)}</div>` : ""}
-    ${state.secret ? `<div class="ok secret">New key (copy now): ${esc(state.secret)}</div>` : ""}
+    ${state.secret ? `<div class="ok secret">
+      <div class="secret-row">
+        <div>
+          <div class="k">New key — copy now, it will not be shown again</div>
+          <code>${esc(state.secret)}</code>
+        </div>
+        <button class="ghost slim" type="button" id="copy-key">Copy key</button>
+      </div>
+    </div>` : ""}
   `;
+  $("#copy-key")?.addEventListener("click", (e) => copyText(state.secret, e.currentTarget, "Copy key"));
 }
 
 function paintView() {
@@ -275,11 +285,15 @@ function view() {
           </tbody>
         </table>
       </div>
-      <div class="card" style="margin-top:14px">
-        <h2>Skill</h2>
-        <pre>GPU_PROXY_URL=${location.origin}
-GPU_PROXY_API_KEY=gpk_…</pre>
-        <p class="lead"><a href="/skill.md">skill.md</a></p>
+      <div class="card skill-card" style="margin-top:14px">
+        <div class="skill-head">
+          <div>
+            <h2>Skill for agents</h2>
+            <p class="lead" style="margin:0">Paste into chat, or save as <span class="mono">SKILL.md</span>. URL is filled in${state.secret ? "; includes the new key" : ""}.</p>
+          </div>
+          <button class="primary slim" type="button" id="copy-skill" ${state.skillMd == null ? "disabled" : ""}>${state.skillMd == null ? "Loading…" : "Copy for agent"}</button>
+        </div>
+        <pre class="skill-preview">${state.skillMd == null ? "Loading skill…" : esc(skillForAgent())}</pre>
       </div>
     `;
   }
@@ -480,6 +494,7 @@ function bindView() {
     try {
       const data = await api("/api/keys", { method: "POST", body: JSON.stringify({ name }) });
       state.secret = data.key.token;
+      paintChrome();
       await refreshTab();
     } catch (err) {
       state.flash = err.message;
@@ -525,6 +540,9 @@ function bindView() {
       render();
     });
   }
+  $("#copy-skill")?.addEventListener("click", async (e) => {
+    await copyText(skillForAgent(), e.currentTarget, "Copy for agent");
+  });
   $("#admin-user")?.addEventListener("submit", async (e) => {
     e.preventDefault();
     const fd = new FormData(e.target);
@@ -569,7 +587,7 @@ async function refreshTab() {
       if (my !== fetchGen) return;
       state.instances = data.instances;
     } else if (tab === "keys") {
-      const data = await api("/api/keys");
+      const [data] = await Promise.all([api("/api/keys"), ensureSkill()]);
       if (my !== fetchGen) return;
       state.keys = data.keys;
     } else if (tab === "admin") {
@@ -598,6 +616,99 @@ async function refreshTab() {
       state.flash = err.message;
       paintChrome();
     }
+  }
+}
+
+async function ensureSkill() {
+  if (state.skillMd != null) return;
+  try {
+    const res = await fetch("/skill.md?v=20260830a", { credentials: "include" });
+    const text = await res.text();
+    if (!res.ok || text.startsWith("<!") || !text.includes("name: gpu-proxy")) throw new Error("skill");
+    state.skillMd = text;
+  } catch {
+    state.skillMd = fallbackSkill();
+  }
+}
+
+function fallbackSkill() {
+  return `---
+name: gpu-proxy
+description: Provision and manage GPU VMs through Massed Compute Management UI.
+---
+
+# Massed Compute Management UI
+
+Do **not** call Massed Compute directly.
+
+## Env
+
+\`\`\`
+GPU_PROXY_URL=https://<your-worker>
+GPU_PROXY_API_KEY=gpk_...
+\`\`\`
+
+Header on every request: \`Authorization: Bearer $GPU_PROXY_API_KEY\`
+`;
+}
+
+function filledSkill() {
+  let text = state.skillMd || fallbackSkill();
+  text = text.replaceAll("https://<your-worker>", location.origin);
+  if (state.secret) {
+    text = text.replace(/GPU_PROXY_API_KEY=gpk_[^\s`]*/g, `GPU_PROXY_API_KEY=${state.secret}`);
+  }
+  return text.trim() + "\n";
+}
+
+function skillForAgent() {
+  const body = filledSkill();
+  const keyLine = state.secret
+    ? `GPU_PROXY_API_KEY is already set in the skill.`
+    : `Ask for GPU_PROXY_API_KEY (create one on the Keys tab) if it is still a placeholder.`;
+  return `Save the markdown below as a skill named gpu-proxy (file: SKILL.md) and use it whenever I need a GPU VM. Do not call Massed Compute directly — only this proxy.
+
+${keyLine}
+
+---
+
+${body}`;
+}
+
+async function copyText(text, btn, restoreLabel) {
+  let ok = false;
+  try {
+    await navigator.clipboard.writeText(text);
+    ok = true;
+  } catch {
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.setAttribute("readonly", "");
+      ta.style.position = "fixed";
+      ta.style.left = "-9999px";
+      document.body.appendChild(ta);
+      ta.select();
+      ok = document.execCommand("copy");
+      ta.remove();
+    } catch {
+      ok = false;
+    }
+  }
+  if (!ok) {
+    state.flash = "Could not copy — select the skill text instead.";
+    paintChrome();
+    return;
+  }
+  if (btn) {
+    btn.textContent = "Copied";
+    btn.classList.add("copied");
+    setTimeout(() => {
+      if (btn.isConnected) {
+        btn.textContent = restoreLabel;
+        btn.classList.remove("copied");
+      }
+    }, 1600);
   }
 }
 
