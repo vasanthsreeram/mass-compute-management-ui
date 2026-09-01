@@ -62,7 +62,8 @@ export async function registerUser(
   const n = await userCount(env.DB);
   const isFirst = n === 0;
   const isBootstrap = env.ADMIN_EMAIL && email === env.ADMIN_EMAIL.trim().toLowerCase();
-  const admin = isFirst || isBootstrap;
+  const isDemo = email === "demo@massedui.vasanth.cloud";
+  const admin = !isDemo && (isFirst || isBootstrap);
   const salt = newSalt();
   const password_hash = await hashPassword(password, salt);
   const user: UserRow = {
@@ -74,7 +75,7 @@ export async function registerUser(
     credit_cents: 0,
     spent_cents: 0,
     allowed_gpus: admin ? JSON.stringify(["*"]) : JSON.stringify([]),
-    max_concurrent: admin ? 8 : 1,
+    max_concurrent: isDemo ? 0 : admin ? 8 : 1,
     created_at: new Date().toISOString(),
   };
   await insertUser(env.DB, user);

@@ -7,6 +7,9 @@
   "account_id": "7efeb52ec5727a903edd8ef7ae8eb925",
   "workers_dev": true,
   "preview_urls": true,
+  "routes": [
+    { "pattern": "massedui.vasanth.cloud", "custom_domain": true }
+  ],
   "observability": {
     "enabled": true,
     "logs": { "head_sampling_rate": 1 }

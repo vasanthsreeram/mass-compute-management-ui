@@ -135,10 +135,11 @@ function renderAuth() {
       <div class="brand">Massed Compute <span>desk</span></div>
       <h1>Sign in</h1>
       <p class="lead">First account is admin. GPU rental stays on your proxy budget.</p>
+      <p class="lead">Demo ($0 budget, cannot launch): <code>demo@massedui.vasanth.cloud</code> / <code>demo-zero</code></p>
       ${state.flash ? `<div class="flash">${esc(state.flash)}</div>` : ""}
       <form id="auth-form">
         <label>Email</label>
-        <input name="email" type="email" required autocomplete="username" />
+        <input name="email" type="email" required autocomplete="username" value="demo@massedui.vasanth.cloud" />
         <label>Password</label>
         <input name="password" type="password" required minlength="8" autocomplete="current-password" />
         <div class="row" style="margin-top:16px">

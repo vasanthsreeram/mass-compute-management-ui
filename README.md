@@ -74,6 +74,9 @@ npm run dev
 
 Open `http://127.0.0.1:8787`.
 
+**Live:** https://massedui.vasanth.cloud  
+Demo login (\$0 proxy budget, cannot launch): `demo@massedui.vasanth.cloud` / `demo-zero`
+
 Production secrets (Wrangler only — never git):
 
 ```bash
