@@ -1,5 +1,7 @@
 # Spend tracking: how it works and how accurate it is
 
+**Update (backend build, 2026-10-07):** problems 1, 2, 5, 6 and 7 below are fixed in code (failed kill retries, final settlement on terminate, ghost VMs reconciled each tick, rounding once per VM with carry, watcher ends a VM at the app's terminate time or the gap midpoint). Problem 9 is partly fixed: billing starts when Massed accepts the launch. Balance calibration (suggestion 5) exists as `POST /api/admin/balance`. Still open: 3, 4, 8, 10 and the price-unit check. See [HANDOFF.md](HANDOFF.md).
+
 Reviewed 2026-10-07 from the code (`src/meter.ts`, `src/watch.ts`, `src/instances.ts`, `src/policy.ts`, `src/massed.ts`) and the live D1 database (`gpu-proxy`). Massed exposes no balance, usage or invoice data over its API (see [massed-api-findings.md](massed-api-findings.md)), so everything here is an estimate. Claims marked **verified** come from the code or the database. Claims marked **inferred** or **unverified** are not confirmed against Massed.
 
 ## Two separate ledgers

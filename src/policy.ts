@@ -4,9 +4,11 @@ import type { GpuSku } from "./massed";
 
 export class HttpError extends Error {
   status: number;
-  constructor(status: number, message: string) {
+  code?: string;
+  constructor(status: number, message: string, code?: string) {
     super(message);
     this.status = status;
+    this.code = code;
   }
 }
 
@@ -38,13 +40,13 @@ export function assertCanLaunch(
 ): PublicUser {
   const pub = publicUser(user);
   if (!gpuAllowed(pub, sku.productName)) {
-    throw new HttpError(403, `GPU ${sku.productName} is not on your allowlist`);
+    throw new HttpError(403, `GPU ${sku.productName} is not on your allowlist`, "gpu_not_allowed");
   }
   if (runningCount >= user.max_concurrent) {
-    throw new HttpError(403, `Concurrent VM cap reached (${user.max_concurrent})`);
+    throw new HttpError(403, `Concurrent VM cap reached (${user.max_concurrent})`, "concurrent_cap");
   }
   if (user.role !== "admin" && user.credit_cents < sku.priceCentsPerHour) {
-    throw new HttpError(402, "Not enough credit for one hour of this GPU");
+    throw new HttpError(402, "Not enough credit for one hour of this GPU", "budget");
   }
   return pub;
 }

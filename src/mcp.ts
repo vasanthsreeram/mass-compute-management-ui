@@ -2,6 +2,8 @@ import type { AuthContext } from "./auth";
 import { handleLaunch, handleListInstances, handleRestart, handleTerminate, instanceDetail } from "./instances";
 import { listImages, listInventory } from "./massed";
 import { filterInventory } from "./policy";
+import { addSshKey, listSshKeys } from "./sshkeys";
+import { labStatus } from "./lab";
 
 type Rpc = { jsonrpc?: string; id?: unknown; method?: string; params?: Record<string, unknown> };
 
@@ -55,6 +57,21 @@ const TOOLS = [
     name: "instances_terminate",
     description: "Destroy a VM. Disk is gone. Confirm with the user first.",
     inputSchema: { type: "object", properties: { id: { type: "string" } }, required: ["id"] },
+  },
+  {
+    name: "ssh_keys_list",
+    description: "List the SSH public keys saved for this user. They are injected into every VM at launch.",
+    inputSchema: { type: "object", properties: {} },
+  },
+  {
+    name: "ssh_keys_add",
+    description: "Save an SSH PUBLIC key (never a private key). Required before launching when the lab uses OAuth.",
+    inputSchema: { type: "object", properties: { name: { type: "string" }, public_key: { type: "string" } }, required: ["public_key"] },
+  },
+  {
+    name: "lab_status",
+    description: "Whether the lab's Massed Compute connection is up (can_launch).",
+    inputSchema: { type: "object", properties: {} },
   },
   {
     name: "usage_get",
@@ -148,6 +165,12 @@ async function callTool(
       return handleRestart(env, ctx, String(args.id ?? ""));
     case "instances_terminate":
       return handleTerminate(env, ctx, String(args.id ?? ""));
+    case "ssh_keys_list":
+      return listSshKeys(env, ctx.user.id);
+    case "ssh_keys_add":
+      return addSshKey(env, ctx.user.id, String(args.name ?? "agent"), String(args.public_key ?? ""));
+    case "lab_status":
+      return labStatus(env, false);
     case "usage_get": {
       const rows = await env.DB.prepare(
         "SELECT id, instance_id, cents, hours, created_at FROM usage_events WHERE user_id = ? ORDER BY created_at DESC LIMIT 50",

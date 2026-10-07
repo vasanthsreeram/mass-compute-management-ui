@@ -45,7 +45,7 @@ export async function deviceStart(env: Env, request: Request, deviceName: string
   return {
     device_code,
     user_code,
-    verify_url: `${origin}/?connect=${user_code}`,
+    verify_url: `${origin}/app?connect=${user_code}`,
     expires_in: CODE_TTL_SEC,
     interval: POLL_INTERVAL_SEC,
     token_days: tokenDays(env),

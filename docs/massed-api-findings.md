@@ -64,6 +64,10 @@ Consequence: a "Login with Massed Compute" flow is feasible and never touches th
 
 The test client (`94f32b07-563b-4cab-9784-1afac3e3023c`) is still registered. Remove it under Settings → Apps if unwanted.
 
+### Now the lab account (backend build, 2026-10-07)
+
+The OAuth connection is no longer a per-user read-only extra. One admin's full-scope grant is "the lab account" and carries every Massed call over MCP (see [HANDOFF.md](HANDOFF.md#the-lab-account)). Only admins connect. The write tools are called with REST-mirroring argument names that are **unverified against real Massed**; they were exercised only against a local fake.
+
 ### Implemented: "Connect Massed Compute" (2026-10-07)
 
 Code: `src/massed_oauth.ts`, routes in `src/api.ts`, migration `migrations/0004_massed_oauth.sql`, page `assets/connect.html`.

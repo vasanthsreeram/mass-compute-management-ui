@@ -1,4 +1,10 @@
-export const MASSED_BASE = "https://vm.massedcompute.com/api/v1";
+import { MASSED_BASE, massedOrigin, USER_AGENT } from "./config";
+import { labConnection } from "./lab";
+import { massedTool } from "./massed_oauth";
+import { ensureSchema, mapToolArgs } from "./schema";
+import { HttpError } from "./policy";
+
+export { MASSED_BASE };
 
 export type GpuSku = {
   productName: string;
@@ -75,17 +81,66 @@ async function cached<T>(key: string, ttlMs: number, fn: () => Promise<T>): Prom
   return value;
 }
 
-function mockEnabled(env: Env): boolean {
-  if (env.MOCK_MASSED === "1") return true;
-  return !env.MASSED_COMPUTE_API_KEY;
+export function isMock(env: Env): boolean {
+  return env.MOCK_MASSED === "1";
 }
+
+/**
+ * How we reach Massed right now.
+ *  - oauth: the lab admin's OAuth grant, over MCP (the only thing OAuth tokens are accepted on)
+ *  - rest:  MASSED_COMPUTE_API_KEY on /api/v1, kept for single-operator deployments and as a fallback
+ *  - mock:  MOCK_MASSED=1
+ * No transport at all is an error, never a silent mock: members must not "launch" fake VMs in production.
+ */
+export type Transport = { kind: "mock" } | { kind: "oauth"; userId: string } | { kind: "rest" };
+
+export async function resolveTransport(env: Env): Promise<Transport> {
+  if (isMock(env)) return { kind: "mock" };
+  const conn = await labConnection(env);
+  if (conn?.status === "active") return { kind: "oauth", userId: conn.userId };
+  if (env.MASSED_COMPUTE_API_KEY) return { kind: "rest" };
+  if (conn?.status === "lost") throw new HttpError(409, "The Massed Compute connection was lost. An admin must reconnect.", "lab_lost");
+  throw new HttpError(409, "No Massed Compute account is connected. An admin must connect one.", "lab_not_connected");
+}
+
+type Rest = { method?: string; path: string; body?: unknown };
 
 async function mcFetch(env: Env, path: string, init: RequestInit = {}): Promise<Response> {
   const headers = new Headers(init.headers);
   headers.set("Authorization", `Bearer ${env.MASSED_COMPUTE_API_KEY}`);
-  headers.set("User-Agent", "MassComputeManagementUI/1.0");
+  headers.set("User-Agent", USER_AGENT);
   if (init.body && !headers.has("Content-Type")) headers.set("Content-Type", "application/json");
-  return fetch(`${MASSED_BASE}${path}`, { ...init, headers });
+  return fetch(`${massedOrigin(env)}/api/v1${path}`, { ...init, headers });
+}
+
+/** One Massed call, over MCP (oauth) or REST (api key). Both return the same JSON shapes. */
+async function massedCall(env: Env, t: Transport, tool: string, args: Record<string, unknown>, rest: Rest): Promise<any> {
+  if (t.kind === "oauth") return massedTool(env, t.userId, tool, await mapToolArgs(env, tool, args));
+  if (t.kind === "rest") {
+    const res = await mcFetch(env, rest.path, {
+      method: rest.method ?? "GET",
+      body: rest.body === undefined ? undefined : JSON.stringify(rest.body),
+    });
+    if (!res.ok) {
+      const text = (await res.text().catch(() => "")).slice(0, 300);
+      throw new HttpError(res.status >= 500 ? 502 : 422, `Massed ${tool} ${res.status}: ${text}`);
+    }
+    return res.json().catch(() => ({}));
+  }
+  throw new HttpError(500, "massedCall on mock transport");
+}
+
+const UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i;
+
+function extractUuid(v: unknown): string | null {
+  if (typeof v === "string") return UUID_RE.exec(v)?.[0] ?? null;
+  if (!v || typeof v !== "object") return null;
+  const o = v as Record<string, unknown>;
+  for (const k of ["response", "uuid", "instanceUuid", "instance_uuid", "instance", "runningInstance"]) {
+    const hit = extractUuid(o[k]);
+    if (hit) return hit;
+  }
+  return UUID_RE.exec(JSON.stringify(v))?.[0] ?? null;
 }
 
 export function parseInventory(payload: unknown): GpuSku[] {
@@ -121,64 +176,66 @@ export function parseInventory(payload: unknown): GpuSku[] {
 }
 
 export async function listInventory(env: Env): Promise<GpuSku[]> {
-  if (mockEnabled(env)) return MOCK_SKUS;
-  return cached("inventory", 90_000, async () => {
-    const res = await mcFetch(env, "/gpu-inventory");
-    if (!res.ok) throw new Error(`massed inventory ${res.status}`);
-    return parseInventory(await res.json());
-  });
+  const t = await resolveTransport(env);
+  if (t.kind === "mock") return MOCK_SKUS;
+  return cached("inventory", 90_000, async () =>
+    parseInventory(await massedCall(env, t, "gpu_inventory_list", {}, { path: "/gpu-inventory" })),
+  );
 }
 
 export async function listImages(env: Env): Promise<MassedImage[]> {
-  if (mockEnabled(env)) return MOCK_IMAGES;
+  const t = await resolveTransport(env);
+  if (t.kind === "mock") return MOCK_IMAGES;
   return cached("images", 300_000, async () => {
-    const res = await mcFetch(env, "/images");
-    if (!res.ok) throw new Error(`massed images ${res.status}`);
-    const data = (await res.json()) as { images?: MassedImage[] };
+    const data = (await massedCall(env, t, "images_list", {}, { path: "/images" })) as { images?: MassedImage[] };
     return data.images ?? [];
   });
 }
 
-export async function launchInstance(
-  env: Env,
-  input: LaunchInput,
-): Promise<{ uuid: string; mock: boolean }> {
-  if (mockEnabled(env)) {
-    return { uuid: `mock-${crypto.randomUUID()}`, mock: true };
+/**
+ * Refuse to launch when the lab's MCP write tools do not accept the arguments we send. Checked before any
+ * row is created, so a launch can never fail half-way on a renamed field. Unknown (tools/list unreachable) does not block.
+ */
+export async function assertWriteSchema(env: Env): Promise<void> {
+  const t = await resolveTransport(env);
+  if (t.kind !== "oauth") return;
+  const s = await ensureSchema(env, { maxAgeMs: 30 * 60_000 });
+  if (s && s.ok === false) {
+    throw new HttpError(503, `Massed tool schema changed: ${s.problems.join("; ").slice(0, 400)}`, "tool_schema_changed");
   }
-  const res = await mcFetch(env, "/instance/launch", {
-    method: "POST",
-    body: JSON.stringify(input),
-  });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`massed launch ${res.status}: ${text.slice(0, 300)}`);
-  }
-  const data = (await res.json()) as { response?: string };
-  if (!data.response) throw new Error("massed launch missing uuid");
+}
+
+/** Whether VM passwords can be read. OAuth/MCP redacts them, so access must be by SSH key. */
+export async function canReadPasswords(env: Env): Promise<boolean> {
+  const t = await resolveTransport(env);
+  return t.kind === "rest" || t.kind === "mock";
+}
+
+export async function launchInstance(env: Env, input: LaunchInput): Promise<{ uuid: string; mock: boolean }> {
+  const t = await resolveTransport(env);
+  if (t.kind === "mock") return { uuid: `mock-${crypto.randomUUID()}`, mock: true };
+  const data = await massedCall(env, t, "instances_launch", { ...input }, { method: "POST", path: "/instance/launch", body: input });
+  const uuid = extractUuid(data);
+  if (!uuid) throw new HttpError(502, "Massed launch returned no instance uuid");
   invalidateMassed("instances");
-  return { uuid: data.response, mock: false };
+  return { uuid, mock: false };
 }
 
 export async function restartInstances(env: Env, uuids: string[]): Promise<void> {
-  if (mockEnabled(env)) return;
-  const res = await mcFetch(env, "/instance/restart", {
-    method: "POST",
-    body: JSON.stringify({ instanceUuids: uuids }),
-  });
-  if (!res.ok) throw new Error(`massed restart ${res.status}`);
+  const t = await resolveTransport(env);
+  if (t.kind === "mock") return;
+  const real = uuids.filter((u) => !u.startsWith("mock-"));
+  if (!real.length) return;
+  await massedCall(env, t, "instances_restart", { instanceUuids: real }, { method: "POST", path: "/instance/restart", body: { instanceUuids: real } });
   invalidateMassed("instances");
 }
 
 export async function terminateInstances(env: Env, uuids: string[]): Promise<void> {
-  if (mockEnabled(env)) return;
+  const t = await resolveTransport(env);
+  if (t.kind === "mock") return;
   const real = uuids.filter((u) => !u.startsWith("mock-"));
   if (!real.length) return;
-  const res = await mcFetch(env, "/instance/terminate", {
-    method: "POST",
-    body: JSON.stringify({ instanceUuids: real }),
-  });
-  if (!res.ok) throw new Error(`massed terminate ${res.status}`);
+  await massedCall(env, t, "instances_terminate", { instanceUuids: real }, { method: "POST", path: "/instance/terminate", body: { instanceUuids: real } });
   invalidateMassed("instances");
 }
 
@@ -192,6 +249,8 @@ export type RemoteInstance = {
   priceCentsPerHour: number;
   uptimeHours: number;
   accumulatedCents: number;
+  ip: string | null;
+  username: string | null;
 };
 
 function dollarsToCents(raw: unknown): number {
@@ -213,39 +272,44 @@ export function invalidateMassed(...keys: string[]): void {
   else for (const k of keys) cache.delete(k);
 }
 
-export async function listRunningInstances(env: Env): Promise<RemoteInstance[]> {
-  if (mockEnabled(env)) return [];
+export async function listRunningInstances(env: Env, opts: { fresh?: boolean } = {}): Promise<RemoteInstance[]> {
+  const t = await resolveTransport(env);
+  if (t.kind === "mock") return [];
+  if (opts.fresh) invalidateMassed("instances");
   return cached("instances", 15_000, async () => {
-  const res = await mcFetch(env, "/instance");
-  if (!res.ok) throw new Error(`massed instances ${res.status}`);
-  const data = (await res.json()) as { runningInstances?: Record<string, unknown>[] };
-  return (data.runningInstances ?? []).map((inst) => {
-    const product = (inst.product ?? {}) as Record<string, unknown>;
-    const image = (inst.image ?? {}) as Record<string, unknown>;
-    const created = inst.created ? String(inst.created) : null;
-    const priceCentsPerHour = dollarsToCents(product.final_price_hr) || dollarsToCents(product.price_hr);
-    const uptimeHours = hoursSince(created);
-    return {
-      uuid: String(inst.uuid ?? ""),
-      name: String(inst.name ?? ""),
-      status: String(inst.status ?? ""),
-      created,
-      productName: product.name ? String(product.name) : null,
-      imageName: image.name ? String(image.name) : null,
-      priceCentsPerHour,
-      uptimeHours,
-      accumulatedCents: Math.round(uptimeHours * priceCentsPerHour),
-    };
-  });
+    const data = (await massedCall(env, t, "instances_list", {}, { path: "/instance" })) as { runningInstances?: Record<string, unknown>[] };
+    return (data.runningInstances ?? []).map((inst) => {
+      const product = (inst.product ?? {}) as Record<string, unknown>;
+      const image = (inst.image ?? {}) as Record<string, unknown>;
+      const created = inst.created ? String(inst.created) : null;
+      const priceCentsPerHour = dollarsToCents(product.final_price_hr) || dollarsToCents(product.price_hr);
+      const uptimeHours = hoursSince(created);
+      return {
+        uuid: String(inst.uuid ?? ""),
+        name: String(inst.name ?? ""),
+        status: String(inst.status ?? ""),
+        created,
+        productName: product.name ? String(product.name) : null,
+        imageName: image.name ? String(image.name) : null,
+        priceCentsPerHour,
+        uptimeHours,
+        accumulatedCents: Math.round(uptimeHours * priceCentsPerHour),
+        ip: inst.ip ? String(inst.ip) : null,
+        username: inst.username ? String(inst.username) : null,
+      };
+    });
   });
 }
 
 export async function getBilling(env: Env): Promise<Record<string, unknown> | null> {
-  if (mockEnabled(env)) return null;
+  const t = await resolveTransport(env);
+  if (t.kind === "mock") return null;
   return cached("billing", 60_000, async () => {
-    const res = await mcFetch(env, "/account/billing");
-    if (!res.ok) return null;
-    return (await res.json()) as Record<string, unknown>;
+    try {
+      return (await massedCall(env, t, "account_billing", {}, { path: "/account/billing" })) as Record<string, unknown>;
+    } catch {
+      return null;
+    }
   });
 }
 
@@ -258,6 +322,7 @@ export type MassedBilling = {
 export type MassedAccount = {
   connected: boolean;
   mock: boolean;
+  mode: "oauth" | "rest" | "mock" | "none";
   tokenValid: boolean;
   running: number;
   burnCentsPerHour: number;
@@ -278,10 +343,11 @@ function parseBilling(raw: Record<string, unknown> | null): MassedBilling | null
   };
 }
 
-export async function getAccountSnapshot(env: Env): Promise<MassedAccount> {
+export async function getAccountSnapshot(env: Env, opts: { fresh?: boolean } = {}): Promise<MassedAccount> {
   const empty: MassedAccount = {
     connected: false,
-    mock: mockEnabled(env),
+    mock: isMock(env),
+    mode: "none",
     tokenValid: false,
     running: 0,
     burnCentsPerHour: 0,
@@ -292,38 +358,31 @@ export async function getAccountSnapshot(env: Env): Promise<MassedAccount> {
     instances: [],
     error: null,
   };
-  if (mockEnabled(env)) {
-    return { ...empty, mock: true, error: "MOCK_MASSED is on — not talking to Massed." };
-  }
-  if (!env.MASSED_COMPUTE_API_KEY) {
-    return { ...empty, error: "MASSED_COMPUTE_API_KEY is not set." };
+  if (isMock(env)) return { ...empty, mock: true, mode: "mock", error: "MOCK_MASSED is on — not talking to Massed." };
+  let t: Transport;
+  try {
+    t = await resolveTransport(env);
+  } catch (e) {
+    return { ...empty, error: e instanceof Error ? e.message : "Not connected" };
   }
   try {
-    const [instances, billingRaw] = await Promise.all([
-      listRunningInstances(env),
-      getBilling(env),
-    ]);
+    const [instances, billingRaw] = await Promise.all([listRunningInstances(env, opts), getBilling(env)]);
     const needPrice = instances.some((i) => !i.priceCentsPerHour && i.productName);
     const price = needPrice
       ? new Map((await listInventory(env)).map((s) => [s.productName, s.priceCentsPerHour]))
       : new Map<string, number>();
     const priced = instances.map((i) => {
       const rate = i.priceCentsPerHour || price.get(i.productName || "") || 0;
-      return {
-        ...i,
-        priceCentsPerHour: rate,
-        accumulatedCents: Math.round(i.uptimeHours * rate),
-      };
+      return { ...i, priceCentsPerHour: rate, accumulatedCents: Math.round(i.uptimeHours * rate) };
     });
-    const burnCentsPerHour = priced.reduce((n, i) => n + i.priceCentsPerHour, 0);
-    const accumulatedCents = priced.reduce((n, i) => n + i.accumulatedCents, 0);
     return {
       connected: true,
       mock: false,
+      mode: t.kind,
       tokenValid: true,
       running: priced.length,
-      burnCentsPerHour,
-      accumulatedCents,
+      burnCentsPerHour: priced.reduce((n, i) => n + i.priceCentsPerHour, 0),
+      accumulatedCents: priced.reduce((n, i) => n + i.accumulatedCents, 0),
       longRunning24h: priced.filter((i) => i.uptimeHours >= 24).length,
       longRunning7d: priced.filter((i) => i.uptimeHours >= 24 * 7).length,
       billing: parseBilling(billingRaw),
@@ -331,27 +390,33 @@ export async function getAccountSnapshot(env: Env): Promise<MassedAccount> {
       error: null,
     };
   } catch (e) {
-    return { ...empty, error: e instanceof Error ? e.message : "Massed request failed" };
+    return { ...empty, mode: t.kind, error: e instanceof Error ? e.message : "Massed request failed" };
   }
 }
 
 export async function validateToken(env: Env): Promise<boolean> {
-  if (mockEnabled(env)) return false;
-  const res = await mcFetch(env, "/account/token/validation", { method: "POST" });
-  return res.ok;
+  const t = await resolveTransport(env);
+  if (t.kind === "mock") return false;
+  try {
+    await massedCall(env, t, "account_token_validation", {}, { method: "POST", path: "/account/token/validation" });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
-export async function getRemoteInstance(
-  env: Env,
-  uuid: string,
-): Promise<{ ip?: string; username?: string; password?: string; status?: string } | null> {
-  if (mockEnabled(env) || uuid.startsWith("mock-")) {
-    return {
-      ip: "203.0.113.10",
-      username: "Ubuntu",
-      password: "mock-password",
-      status: "rented",
-    };
+export type RemoteDetail = { ip?: string; username?: string; password?: string; status?: string };
+
+/** Connection details for one VM. Over OAuth/MCP the password is redacted, so it is never returned. */
+export async function getRemoteInstance(env: Env, uuid: string): Promise<RemoteDetail | null> {
+  const t = await resolveTransport(env);
+  if (t.kind === "mock" || uuid.startsWith("mock-")) {
+    return { ip: "203.0.113.10", username: "Ubuntu", password: "mock-password", status: "rented" };
+  }
+  if (t.kind === "oauth") {
+    const vm = (await listRunningInstances(env)).find((i) => i.uuid === uuid);
+    if (!vm) return null;
+    return { ip: vm.ip ?? undefined, username: vm.username ?? undefined, status: vm.status || undefined };
   }
   const res = await mcFetch(env, `/instance/${uuid}`);
   if (!res.ok) return null;

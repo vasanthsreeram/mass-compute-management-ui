@@ -22,12 +22,13 @@ Base: `$GPU_PROXY_URL`
 
 | Action | Call |
 |--------|------|
-| Who am I / credit | `GET /api/me` |
+| Who am I / credit / lab status | `GET /api/me` (check `lab.can_launch`) |
 | Allowed GPUs | `GET /api/inventory` |
 | Match cheapest SKU | `POST /api/match` `{"query":"fine-tune llama 8b cheap"}` |
 | List my VMs | `GET /api/instances` |
+| Save an SSH public key | `POST /api/ssh-keys` `{"name":"agent","public_key":"ssh-ed25519 AAAA..."}` |
 | Launch | `POST /api/instances` `{"productName":"gpu_1x_a6000","imageId":104}` |
-| Get + SSH | `GET /api/instances/:id` |
+| Get + SSH | `GET /api/instances/:id` (`access.ssh_command`) |
 | Restart | `POST /api/instances/:id/restart` |
 | Terminate (destroys disk) | `POST /api/instances/:id/terminate` |
 | Usage | `GET /api/usage` |
@@ -38,14 +39,14 @@ MCP (same key): `POST $GPU_PROXY_URL/mcp` JSON-RPC `tools/list` / `tools/call`.
 
 1. `GET /api/me`. If `credit_cents` is 0 or `allowed_gpus` is empty, tell the user to ask an admin.
 2. Prefer `POST /api/match` with the job in plain language, then launch that SKU. Else `GET /api/inventory` and pick the cheapest that fits.
-3. Launch. Show the returned `id`, SKU, `$/hr`.
-4. Poll `GET /api/instances/:id` until `ip` is set. Give SSH as `ssh <username>@<ip>`.
+3. Launch. Show the returned `id`, SKU, `$/hr`. If the error `code` is `needs_ssh_key`, ask the user for a public key (never a private key) and save it with `POST /api/ssh-keys`, then retry.
+4. Poll `GET /api/instances/:id` until `ip` is set. Give `access.ssh_command`. VMs are reached with the saved SSH key; there is no password.
 5. When the job is done, confirm, then terminate.
 
 ## Hard rules
 
 - Never call `vm.massedcompute.com`. The proxy is the only API.
-- 402 / 403 are policy, not retries.
+- 402 / 403 are policy, not retries. 409 means the lab's Massed connection is down: tell the user an admin must reconnect it.
 - Confirm terminate. There is no pause/snapshot. Terminate wipes the disk.
 - Do not store or echo other tenants' machines.
 - Min billable unit upstream is 1 hour.

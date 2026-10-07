@@ -97,7 +97,7 @@
 <body>
 <main>
   <h1>Massed Compute connection</h1>
-  <p class="lead">Link your own Massed Compute account with Massed's sign-in page. We never see your password, and you can disconnect here or under Settings &rarr; Connected Apps on Massed.</p>
+  <p class="lead">Connect the lab's Massed Compute account with Massed's own sign-in page. Teammates then launch GPUs on this account through the desk, within the budgets and limits you set. We never see your password, and you can disconnect here or under Settings &rarr; Connected Apps on Massed. <a href="/app">Back to the app</a></p>
 
   <div id="notice"></div>
 
@@ -137,23 +137,25 @@ async function render() {
   try {
     s = await api("/api/massed/connection");
   } catch (e) {
+    if (e.status === 403) { $("status").innerHTML = `<p>Only admins can connect Massed Compute. Ask a lab admin.</p><div class="row"><a class="btn" href="/app">Back to the app</a></div>`; return; }
     $("status").innerHTML = e.status === 401
-      ? `<p>Sign in first.</p><div class="row"><a class="btn primary" href="/">Go to sign in</a></div>`
+      ? `<p>Sign in as an admin first.</p><div class="row"><a class="btn primary" href="/app">Go to sign in</a></div>`
       : `<p class="bad">${esc(e.message)}</p>`;
     return;
   }
 
   if (!s.connected) {
+    const lost = s.status === "lost";
     $("status").innerHTML = `
-      <p><strong>Not connected.</strong> You will approve read-only access on Massed's own page: running VMs, GPU stock and prices, images, SSH keys and billing settings.</p>
-      <div class="row"><button class="primary" id="connect">Connect Massed Compute</button></div>`;
+      <p><strong>${lost ? "Connection lost." : "Not connected."}</strong> ${lost ? "Massed revoked or expired the grant, so launching is paused. " : ""}On Massed's page, leave <em>Read-only access</em> switched <strong>off</strong>: the desk needs full access to launch and stop VMs on behalf of your teammates.</p>
+      <div class="row"><button class="primary" id="connect">${lost ? "Reconnect" : "Connect"} Massed Compute</button></div>`;
     $("connect").onclick = connect;
     $("probe").hidden = true;
     return;
   }
 
   $("status").innerHTML = `
-    <p><span class="badge ok">Connected</span> <span class="muted">· ${esc(s.scope)} · since ${esc(new Date(s.connected_at).toLocaleString())}</span></p>
+    <p><span class="badge ok">Connected</span> <span class="muted">· ${esc(s.scope)} · the lab account · since ${esc(new Date(s.connected_at).toLocaleString())}</span></p>
     ${s.last_error ? `<p class="badge bad">Last error: ${esc(s.last_error)}</p>` : ""}
     <div class="row">
       <button class="primary" id="run">Test what we can pull</button>
@@ -172,7 +174,7 @@ async function render() {
 async function connect() {
   $("connect").disabled = true;
   try {
-    const { url } = await api("/api/massed/connect", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+    const { url } = await api("/api/massed/connect", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ return_to: "app" }) });
     location.href = url;
   } catch (e) {
     notice("bad", e.message);

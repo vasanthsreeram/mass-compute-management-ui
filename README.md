@@ -1,11 +1,14 @@
 # Massed Compute Management UI
 
-A Cloudflare Worker in front of **one** Massed Compute account key. People log in, rent GPUs, and stay inside the budget and SKU allowlist you give them. Agents use per-user API keys (`gpk_…`). They never see the Massed key.
+A Cloudflare Worker in front of **one lab Massed Compute account**. An admin connects it with "Login with Massed Compute" (OAuth 2.1 + PKCE). Teammates sign up by invite, with no Massed account, and launch GPUs on the lab account through the desk, inside the budget, GPU allowlist and concurrency cap you give them. Agents use per-user API keys (`gpk_…`). Nobody but the admin's grant ever touches Massed credentials.
 
 **Massed Compute signup (referral):** [https://vm.massedcompute.com/signup?referral=a6Cjx5Rdeg](https://vm.massedcompute.com/signup?referral=a6Cjx5Rdeg)
 
 ## What it does
 
+- **Lab account:** one admin's OAuth grant (full scope) carries every Massed call over MCP. `MASSED_COMPUTE_API_KEY` is only a fallback for single-operator setups. If the grant is lost, the desk shows it lab-wide and emails the admins. See `docs/HANDOFF.md`.
+- **SSH-key launches:** members save a public key; it is injected at launch (Massed MCP redacts VM passwords)
+- **Tracking:** every launch/restart/terminate/failure with its actor (user or agent key), spend per user / key / SKU, burn over time, VMs launched outside the app flagged "unattributed", recharge-setting history, connection events, manual balance calibration
 - Email + password auth on the Worker (D1 sessions, no WorkOS)
 - Per-user **proxy budget**, **GPU allowlist**, **concurrent cap**
 - **Match:** describe a job; Workers AI (`@cf/meta/llama-3.1-8b-instruct-fast`) picks the cheapest live SKU that fits
@@ -74,7 +77,7 @@ npx wrangler d1 migrations apply gpu-proxy --local
 npm run dev
 ```
 
-Open `http://127.0.0.1:8787`.
+Open `http://127.0.0.1:8787`. The landing page is `/`, the app is `/app`.
 
 **Live:** https://massedui.vasanth.cloud  
 Demo login (\$0 proxy budget, cannot launch): `demo@massedui.vasanth.cloud` / `demo-zero`
@@ -82,21 +85,25 @@ Demo login (\$0 proxy budget, cannot launch): `demo@massedui.vasanth.cloud` / `d
 Production secrets (Wrangler only — never git):
 
 ```bash
-npx wrangler secret put MASSED_COMPUTE_API_KEY
 npx wrangler secret put SESSION_SECRET
 npx wrangler secret put DATA_KEY
 ```
 
-`MOCK_MASSED` must be `"0"` in `wrangler.jsonc` for live Massed inventory and Overview.
+Optional single-operator fallback: `npx wrangler secret put MASSED_COMPUTE_API_KEY` (REST; the only way to read VM passwords). Set `APP_URL` in `wrangler.jsonc` to your public URL (used in emails). `MOCK_MASSED` must stay `"0"`; it is a dev-only flag.
+
+Self-hosting: deploy the Worker, apply the migrations, sign up as the first user (becomes admin), open **Fleet → Connect Massed Compute**.
 
 ## Metering
 
-Cron every 5 minutes:
+Cron every 5 minutes, in this order:
 
-1. Debit `price_cents_per_hour × elapsed` from a tenant’s proxy budget. At 0, their running VMs are terminated. Admins are not killed by proxy budget.
-2. **Massed watch:** list currently running VMs on the operator account, upsert them in D1, accrue estimated $ from the last sample, and mark VMs `ended` when they disappear. That is our history — Massed does not return past usage.
+1. Read the live VM list from Massed once (through the lab connection).
+2. **Reconcile:** a VM we billed that is gone upstream (killed in the Massed dashboard, never started) stops metering and is settled at the estimated end.
+3. **Meter:** debit `price × elapsed` per VM, rounded once per VM with the fractional cent carried to the next tick.
+4. **Budget kill:** a member at $0 has their VMs terminated on Massed. The row is marked terminated only if Massed confirms; otherwise it keeps metering and retries next tick. Admins are not killed by proxy budget.
+5. **Massed watch:** upsert every running VM (joined to our users, or flagged unattributed), record the burn tick and any recharge-setting change. That is our history, since Massed returns no past usage.
 
-Massed still bills the operator (min 1 hour). Watch $ is an estimate from samples, not an invoice.
+Terminating through the app does a final settlement. Massed still bills the lab (min 1 hour, not enforced in our estimate). Everything here is an estimate until calibrated against the balance on Massed's billing page (admins can enter it under calibration).
 
 ## Security
 

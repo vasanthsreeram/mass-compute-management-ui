@@ -40,6 +40,11 @@ export type InstanceRow = {
   launched_at: string;
   terminated_at: string | null;
   last_metered_at: string;
+  api_key_id: string | null;
+  ssh_fingerprints: string | null;
+  carry_cents: number;
+  billed_cents: number;
+  end_reason: string | null;
 };
 
 export function publicUser(row: UserRow): PublicUser {

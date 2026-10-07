@@ -2,6 +2,7 @@
    Massed Compute desk — design system
    Sections: 1 tokens · 2 base · 3 shell · 4 auth · 5 surfaces · 6 controls
              7 pills & status · 8 cards · 9 charts · 10 tables · 11 motion
+             12 onboarding, keys & fleet
    ========================================================================== */
 
 /* ---------------------------------------------------------------- 1 tokens */
@@ -257,6 +258,59 @@ td code,
   flex-shrink: 0;
 }
 
+/* avatar menu: sign out and help live here, so the header stays short on phones */
+.who-wrap { position: relative; display: inline-flex; margin-left: 8px; flex-shrink: 0; }
+.nav button.who { margin-left: 0; padding: 0; border-radius: 10px; background: none; }
+.nav button.who:hover { background: none; transform: translateY(-1px); }
+.nav button.who[aria-expanded="true"] .avatar { box-shadow: inset 0 0 0 1px hsl(var(--h, 28) 45% 62%); }
+.nav .menu {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 9px);
+  z-index: 60;
+  min-width: 236px;
+  padding: 6px;
+  display: grid;
+  gap: 1px;
+  background: var(--panel);
+  border: 1px solid var(--line-2);
+  border-radius: var(--r);
+  box-shadow: var(--sh-2);
+  animation: pop 0.16s var(--ease) both;
+}
+.nav .menu[hidden] { display: none; }
+.nav .menu-head {
+  display: grid;
+  gap: 1px;
+  padding: 8px 10px 9px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--line);
+  font-size: 12.5px;
+  font-weight: 620;
+  overflow-wrap: anywhere;
+}
+.nav .menu-head .s { font-size: 11px; font-weight: 400; color: var(--muted-2); text-transform: capitalize; }
+.nav button.menu-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 9px 10px;
+  border: 0;
+  border-radius: var(--r-sm);
+  background: none;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 550;
+  text-align: left;
+  white-space: nowrap;
+}
+.nav button.menu-item:hover { background: var(--panel-3); color: var(--ink); }
+.nav .menu-item svg { width: 15px; height: 15px; flex: none; color: var(--muted); }
+.nav button.menu-item.danger { color: var(--bad); }
+.nav button.menu-item.danger:hover { background: var(--bad-soft); }
+.nav .menu-item.danger svg { color: var(--bad); }
+
 .foot {
   margin-top: 44px;
   padding-top: 18px;
@@ -434,6 +488,15 @@ button { font-family: inherit; }
   filter: saturate(0.5);
 }
 .primary.slim { width: auto; }
+/* a launch that policy blocks stays clickable so it can explain itself */
+.primary.blocked {
+  opacity: 0.6;
+  box-shadow: none;
+  background: var(--panel-3);
+  color: var(--muted);
+  border: 1px solid var(--line-2);
+}
+.primary.blocked:hover:not(:disabled) { transform: none; box-shadow: none; filter: none; background: var(--panel-3); }
 
 .ghost {
   background: var(--panel);
@@ -1301,6 +1364,347 @@ td.heat .mono { font-variant-numeric: tabular-nums; }
 [data-anim="1"] .spark .area,
 [data-anim="1"] .chart .area { animation: area-in 0.9s var(--ease) backwards; }
 
+/* ---------------------------------------------------------------- 12 onboarding, keys & fleet */
+
+/* the tour spotlights these, so leave room for the sticky header */
+[data-tour] { scroll-margin-top: calc(var(--hdr) + 24px); scroll-margin-bottom: 28px; }
+
+.icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 7px 9px;
+}
+.icon-btn svg { width: 16px; height: 16px; }
+
+/* inline icons inside buttons must not pick up the SVG default size */
+button svg { width: 15px; height: 15px; flex: none; }
+
+.row.tight { gap: 8px; }
+.row.tight > * { flex: 0 0 auto; }
+.row.tight input { flex: 1; }
+
+/* "required" marker on the launch form's SSH field */
+.req {
+  margin-left: 7px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: var(--warn-soft);
+  border: 1px solid var(--warn-line);
+  color: var(--warn);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.modal select[name="savedKey"] {
+  font-family: var(--mono);
+  font-size: 12px;
+  margin-bottom: 9px;
+}
+
+/* a labelled switch, for settings an admin flips rather than a verb button */
+.check.switch {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 2px 0 6px;
+  padding: 11px 13px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--panel-2);
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: border-color 0.16s, background 0.16s;
+}
+.check.switch:hover { border-color: var(--accent-2); background: var(--panel-3); }
+.check.switch input { width: 16px; height: 16px; flex: none; cursor: pointer; }
+.check.switch:has(input:checked) { border-color: var(--accent-2); background: var(--accent-soft); }
+
+/* snapshot chips in the billing-settings card */.chip-row { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0 4px; }
+.chip {
+  display: grid;
+  gap: 2px;
+  padding: 9px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--panel-2);
+  min-width: 150px;
+}
+.chip .k { font-size: 10px; font-weight: 650; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted-2); }
+.chip b { font-size: 14px; font-weight: 640; }
+.chip .s { font-size: 11.5px; color: var(--muted); }
+
+/* inline advisory line, used for budget and connection warnings */
+.notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 12px 0 0;
+  padding: 9px 11px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--panel-2);
+  color: var(--ink-2);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+.notice svg { width: 15px; height: 15px; flex: none; margin-top: 1px; }
+.notice.warn { background: var(--warn-soft); border-color: var(--warn-line); color: var(--warn); }
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 40px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  border: 1px solid var(--line-2);
+  background: var(--panel-3);
+  color: var(--muted);
+  font-size: 10.5px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+.badge.ok { background: var(--run-soft); border-color: var(--run-line); color: var(--run); }
+.badge.bad { background: var(--bad-soft); border-color: var(--bad-line); color: var(--bad); }
+
+.kv {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 11px 18px;
+  margin: 14px 0 0;
+}
+.kv .k {
+  display: block;
+  margin-bottom: 2px;
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--muted-2);
+}
+.kv b { font-size: 13px; font-weight: 600; }
+
+.howto {
+  margin: 2px 0 0;
+  padding-left: 20px;
+  display: grid;
+  gap: 9px;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--ink-2);
+}
+.howto li::marker { color: var(--accent); font-weight: 700; }
+.howto li b { color: var(--ink); font-weight: 640; }
+
+/* ---- ssh keys ---- */
+.ssh-form { display: grid; gap: 9px; margin: 14px 0 0; }
+
+/* saved keys fold away so Launch stays the top of the page */
+.ssh-card > summary {
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 9px;
+  cursor: pointer;
+  list-style: none;
+}
+.ssh-card > summary::-webkit-details-marker { display: none; }
+/* this card draws its own chevron, so opt out of the shared disclosure triangle */
+.ssh-card > summary::before { content: none; }
+.ssh-card > summary::marker { content: ""; }
+.chev {
+  flex: none;
+  width: 0;
+  height: 0;
+  border-left: 5px solid var(--muted-2);
+  border-top: 4.5px solid transparent;
+  border-bottom: 4.5px solid transparent;
+  transition: transform 0.18s var(--ease);
+}
+.ssh-card[open] > summary .chev { transform: rotate(90deg); }
+.ssh-card > summary .sum-title {
+  font-size: 14px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+}
+.ssh-card > summary .hint { margin-left: auto; text-align: right; }
+.ssh-card[open] > summary { margin-bottom: 2px; }
+.ssh-card[open] > *:not(summary) { animation: fade 0.2s var(--ease) both; }
+.ssh-form input[name="name"] { flex: 0 0 170px; min-width: 0; }
+.ssh-form input[name="public_key"] { font-family: var(--mono); font-size: 12px; }
+.keylist { list-style: none; margin: 12px 0 0; padding: 0; display: grid; gap: 5px; }
+.keylist li {
+  display: flex;
+  align-items: center;
+  gap: 11px;
+  padding: 9px 11px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  background: var(--panel-2);
+  transition: background 0.16s;
+}
+.keylist li:hover { background: var(--panel-3); }
+.keylist .gpu-name { font-size: 13px; }
+.keylist .s { overflow-wrap: anywhere; }
+
+/* ---- member budget ---- */
+.budget-panel {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+.budget-panel .k {
+  font-size: 10.5px;
+  font-weight: 650;
+  letter-spacing: 0.075em;
+  text-transform: uppercase;
+  color: var(--muted-2);
+}
+.budget-panel .v { font-size: 30px; font-weight: 700; letter-spacing: -0.03em; line-height: 1.15; }
+.budget-panel .v small { margin-left: 2px; font-size: 14px; font-weight: 550; color: var(--muted); }
+.budget-panel .grow { flex: 1 1 280px; }
+.budget-panel.compact { margin-bottom: 16px; }
+.budget-panel.compact .v { font-size: 24px; }
+.budget-rows {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(104px, 1fr));
+  gap: 12px 18px;
+  margin-top: 14px;
+}
+.budget-rows > div { min-width: 0; }
+.budget-rows .k { display: block; margin-bottom: 3px; }
+.budget-rows b { font-size: 14px; font-weight: 620; }
+.budget-panel .cap { flex: 1 1 132px; min-width: 132px; max-width: 200px; margin-left: auto; }
+.budget-panel .cap .v { font-size: 20px; }
+.budget-panel .cap .track { margin: 9px 0 6px; }
+.budget-panel .notice { flex-basis: 100%; }
+
+/* ---- lab connection & fleet ---- */
+.lab-line {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+.lab-line .hint { flex: 1; min-width: 190px; }
+.lab .actions { margin-top: 15px; }
+/* plain-language reasons a launch is blocked (schema problems, for instance) */
+.issues {
+  list-style: disc;
+  margin: 10px 0 0;
+  padding-left: 20px;
+  display: grid;
+  gap: 5px;
+  font-size: 12px;
+  color: var(--ink-2);
+}
+.issues li::marker { color: var(--warn); }
+.issues li { overflow-wrap: anywhere; }
+.probe { display: grid; gap: 7px; margin-top: 16px; padding-top: 13px; border-top: 1px dashed var(--line-2); }
+.probe .hl { margin-bottom: 0; }
+.probe-row { display: flex; align-items: center; gap: 9px; font-size: 12.5px; }
+.probe-row code { font-family: var(--mono); font-size: 11.5px; }
+.probe-row .s { margin-left: auto; text-align: right; color: var(--muted); }
+
+/* money/access markers in the activity feed */
+.feed li .tag { flex: none; align-self: center; width: 7px; height: 7px; border-radius: 50%; }
+.tag.money { background: var(--accent-2); }
+.tag.conn { background: var(--run); }
+
+.pill.you { background: var(--accent-soft); color: var(--accent); border-color: var(--line-2); }
+.member.self { box-shadow: var(--sh-1), inset 0 0 0 1.5px var(--accent-2); }
+.member.self .gpu-name { color: var(--accent); }
+
+/* ---- onboarding checklist ---- */
+.onboard { margin-bottom: 18px; }
+.onboard .card-head { margin-bottom: 4px; }
+.checklist { list-style: none; margin: 14px 0 2px; padding: 0; display: grid; gap: 2px; }
+.checklist li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 8px;
+  border-radius: var(--r-sm);
+  font-size: 13.5px;
+  transition: background 0.14s;
+}
+.checklist li:hover { background: var(--panel-2); }
+.checklist li span { flex: 1; min-width: 0; }
+.checklist li i {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border: 1.5px solid var(--line-2);
+  border-radius: 50%;
+  color: var(--run);
+}
+.checklist li i svg { width: 11px; height: 11px; stroke-width: 3.2; }
+.checklist li.done i { background: var(--run-soft); border-color: var(--run-line); }
+.checklist li.done span { color: var(--muted); }
+
+/* ---- guided tour ---- */
+#tour { position: fixed; inset: 0; z-index: 200; pointer-events: none; }
+.tour-veil { position: fixed; inset: 0; background: rgba(42, 34, 28, 0.52); }
+.tour-hole {
+  position: fixed;
+  border-radius: var(--r-lg);
+  box-shadow: 0 0 0 9999px rgba(42, 34, 28, 0.52), inset 0 0 0 2px rgba(255, 250, 244, 0.9);
+  transition: left 0.26s var(--ease), top 0.26s var(--ease), width 0.26s var(--ease),
+    height 0.26s var(--ease);
+}
+.tour-card {
+  position: fixed;
+  z-index: 1;
+  width: min(360px, calc(100vw - 24px));
+  padding: 16px 18px 14px;
+  pointer-events: auto;
+  box-shadow: var(--sh-3);
+  animation: pop 0.3s var(--ease) both;
+}
+.tour-card.centered {
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  animation: fade 0.3s var(--ease) both;
+}
+/* Phone widths: dock to the bottom so the card can never cover the header or the nav. */
+.tour-card.docked {
+  left: 12px;
+  right: 12px;
+  top: auto;
+  bottom: calc(14px + env(safe-area-inset-bottom, 0px));
+  width: auto;
+  max-width: none;
+  /* give up rather than climb into the header on a very short viewport */
+  max-height: calc(100vh - 170px);
+  max-height: calc(100dvh - 170px);
+  overflow-y: auto;
+  animation: rise 0.3s var(--ease) both;
+}
+.tour-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 7px; }
+.tour-n { font-size: 10.5px; font-weight: 700; letter-spacing: 0.075em; text-transform: uppercase; color: var(--accent); }
+.tour-card h2 { margin: 0 0 6px; font-size: 16.5px; }
+.tour-card p { margin: 0; font-size: 13px; line-height: 1.58; color: var(--ink-2); }
+.tour-dots { display: flex; gap: 5px; margin: 15px 0 13px; }
+.tour-dots i { width: 6px; height: 6px; border-radius: 50%; background: var(--line-2); transition: all 0.2s var(--ease); }
+.tour-dots i.on { width: 16px; border-radius: 99px; background: var(--accent); }
+.tour-card .actions { gap: 8px; }
+.tour-card .actions .linkish { margin-left: auto; }
+
 /* ---------------------------------------------------------------- responsive */
 
 @media (max-width: 980px) {
@@ -1317,10 +1721,22 @@ td.heat .mono { font-variant-numeric: tabular-nums; }
     flex-wrap: wrap;
     gap: 10px;
   }
-  .nav { width: 100%; overflow-x: auto; padding-bottom: 2px; gap: 0; }
-  .nav::-webkit-scrollbar { display: none; }
+  .nav {
+    width: 100%;
+    flex-wrap: wrap;
+    row-gap: 4px;
+    gap: 2px;
+    /* visible, not scrolling: a horizontal scroller hides items and clips the avatar menu */
+    overflow: visible;
+    padding-bottom: 2px;
+  }
   .nav button { padding: 6px 11px; font-size: 13px; }
+  .who-wrap { margin-left: 2px; }
   .brand span { display: none; }
+  /* stack the key form: side by side leaves the key input a sliver at 390px */
+  .ssh-form .row { display: grid; grid-template-columns: 1fr; gap: 9px; }
+  .ssh-form input[name="name"] { flex: none; width: 100%; }
+  .ssh-form .row.tight { display: flex; flex-wrap: wrap; }
   .filters.sticky { top: auto; position: static; background: none; margin: 0 0 14px; padding: 0; }
   .invite-grid { grid-template-columns: 1fr 1fr; }
   .invite-grid > div:first-child { grid-column: 1 / -1; }
@@ -1329,6 +1745,9 @@ td.heat .mono { font-variant-numeric: tabular-nums; }
   .gpu-grid,
   .vm-grid { grid-template-columns: 1fr; }
   h1 { font-size: 22px; }
+  .budget-panel { gap: 16px; }
+  .budget-panel .cap { margin-left: 0; max-width: none; flex-basis: 100%; }
+  .tour-card { width: calc(100vw - 24px); }
 }
 
 @media (max-width: 560px) {
@@ -1338,6 +1757,10 @@ td.heat .mono { font-variant-numeric: tabular-nums; }
   .donut-wrap { justify-content: center; }
   .stats { grid-template-columns: 1fr; }
   .auth { margin: 6vh 12px 0; padding: 24px; }
+  .budget-panel .grow { flex-basis: 100%; }
+  .budget-panel .v { font-size: 26px; }
+  .onboard .card-head { align-items: flex-start; }
+  .onboard .card-head .row.tight { width: 100%; }
 }
 
 @media (prefers-reduced-motion: reduce) {
