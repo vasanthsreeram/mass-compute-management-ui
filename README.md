@@ -30,6 +30,8 @@ Official REST (`/api/v1`) + MCP (`account_billing`, `instances_list`, …) — M
 
 Overview never invents a $1000 (or any) Massed wallet. Tenant “proxy budget” in Admin is an allocation you set here.
 
+Deeper notes: [Massed API, MCP, OAuth and dashboard findings](docs/massed-api-findings.md) and [how accurate our spend tracking is](docs/spend-tracking-accuracy.md).
+
 ## Why a proxy
 
 The Massed API key is account-wide. It can list every VM (including passwords), launch any SKU, and terminate the fleet. Users and agents must never see it. This Worker is the tenant layer.

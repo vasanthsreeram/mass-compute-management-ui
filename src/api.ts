@@ -1,10 +1,12 @@
-import { createApiKey, createSession, destroySession, loginUser, publicUser, registerUser, requireAdmin, requireAuth, sessionCookie, clearSessionCookie } from "./auth";
+import { createSession, finishSignup, startSignup, destroySession, loginUser, publicUser, requireAdmin, requireAuth, sessionCookie, clearSessionCookie } from "./auth";
 import { audit, getUserById, publicUser as toPublic, type UserRow } from "./db";
+import { deviceDecide, deviceInfo, devicePoll, deviceStart } from "./device";
 import { handleLaunch, handleListInstances, handleRestart, handleTerminate, instanceDetail } from "./instances";
 import { getAccountSnapshot, getBilling, listImages, listInventory, listRunningInstances } from "./massed";
 import { recommendSetup } from "./match";
 import { HttpError, filterInventory, parseGpus } from "./policy";
 import { handleMcp } from "./mcp";
+import { connectionStatus, disconnect, finishConnect, probeConnection, startConnect } from "./massed_oauth";
 import { tickMeter } from "./meter";
 import { massedWatchReport } from "./watch";
 
@@ -61,12 +63,41 @@ export async function handleRequest(request: Request, env: Env, ctx: ExecutionCo
 
     if (path === "/api/auth/register" && method === "POST") {
       const body = await readJson(request);
-      const user = await registerUser(env, String(body.email ?? ""), String(body.password ?? ""));
+      return json(await startSignup(env, String(body.email ?? ""), String(body.password ?? "")));
+    }
+
+    if (path === "/api/auth/verify" && method === "POST") {
+      const body = await readJson(request);
+      const user = await finishSignup(env, String(body.email ?? ""), String(body.code ?? ""));
       const token = await createSession(env, user.id);
       return json(
         { user: publicUser(user) },
         { headers: { "Set-Cookie": sessionCookie(token, request) } },
       );
+    }
+
+    if (path === "/api/cli/start" && method === "POST") {
+      const body = await readJson(request);
+      return json(await deviceStart(env, request, String(body.name ?? "agent")));
+    }
+    if (path === "/api/cli/poll" && method === "POST") {
+      const body = await readJson(request);
+      return json(await devicePoll(env, String(body.device_code ?? "")));
+    }
+    if (path === "/api/cli/info" && method === "GET") {
+      await requireAuth(env, request);
+      return json(await deviceInfo(env, url.searchParams.get("code") ?? ""));
+    }
+    if (path === "/api/cli/decide" && method === "POST") {
+      const auth = await requireAuth(env, request);
+      const body = await readJson(request);
+      return json(await deviceDecide(env, auth, String(body.code ?? ""), body.approve === true));
+    }
+
+    if (path === "/gpu-proxy.sh" && method === "GET") {
+      const asset = await env.ASSETS.fetch(new URL("/gpu-proxy.sh", request.url));
+      const text = (await asset.text()).replaceAll("__GPU_PROXY_URL__", url.origin);
+      return new Response(text, { headers: { "Content-Type": "text/x-shellscript; charset=utf-8" } });
     }
 
     if (path === "/api/auth/login" && method === "POST") {
@@ -156,18 +187,11 @@ export async function handleRequest(request: Request, env: Env, ctx: ExecutionCo
     if (path === "/api/keys" && method === "GET") {
       const auth = await requireAuth(env, request);
       const rows = await env.DB.prepare(
-        "SELECT id, name, key_prefix, created_at, last_used_at FROM api_keys WHERE user_id = ? ORDER BY created_at DESC",
+        "SELECT id, name, key_prefix, kind, created_at, last_used_at, expires_at FROM api_keys WHERE user_id = ? ORDER BY created_at DESC",
       )
         .bind(auth.user.id)
         .all();
       return json({ keys: rows.results ?? [] });
-    }
-
-    if (path === "/api/keys" && method === "POST") {
-      const auth = await requireAuth(env, request);
-      const body = await readJson(request);
-      const created = await createApiKey(env, auth.user.id, String(body.name ?? "agent"));
-      return json({ key: created }, { status: 201 });
     }
 
     const keyDel = path.match(/^\/api\/keys\/([^/]+)$/);
@@ -176,6 +200,36 @@ export async function handleRequest(request: Request, env: Env, ctx: ExecutionCo
       await env.DB.prepare("DELETE FROM api_keys WHERE id = ? AND user_id = ?").bind(keyDel[1], auth.user.id).run();
       await audit(env.DB, auth.user.id, "api_key.revoke", { id: keyDel[1] });
       return json({ ok: true });
+    }
+
+    if (path === "/api/team" && method === "GET") {
+      const auth = await requireAuth(env, request);
+      return json(await teamOverview(env, auth.user.role === "admin"));
+    }
+
+    if (path === "/api/team/invites" && method === "POST") {
+      const auth = await requireAdmin(env, request);
+      const body = await readJson(request);
+      return json(await createInvite(env, auth.user.id, body), { status: 201 });
+    }
+
+    const inviteDel = path.match(/^\/api\/team\/invites\/([^/]+)$/);
+    if (inviteDel && method === "DELETE") {
+      const auth = await requireAdmin(env, request);
+      const email = decodeURIComponent(inviteDel[1]).toLowerCase();
+      await env.DB.prepare("DELETE FROM invites WHERE email = ?").bind(email).run();
+      await audit(env.DB, auth.user.id, "team.invite.revoke", { email });
+      return json({ ok: true });
+    }
+
+    if (path === "/api/admin/audit" && method === "GET") {
+      await requireAdmin(env, request);
+      const rows = await env.DB.prepare(
+        `SELECT a.id, a.action, a.detail, a.created_at, u.email
+         FROM audit_log a LEFT JOIN users u ON u.id = a.user_id
+         ORDER BY a.created_at DESC LIMIT 60`,
+      ).all();
+      return json({ events: rows.results ?? [] });
     }
 
     if (path === "/api/admin/catalog" && method === "GET") {
@@ -249,6 +303,29 @@ export async function handleRequest(request: Request, env: Env, ctx: ExecutionCo
       return json(result);
     }
 
+    // "Connect Massed Compute": each user can link their own Massed account over OAuth (read-only by default).
+    if (path === "/api/massed/connection" && method === "GET") {
+      const auth = await requireAuth(env, request);
+      return json(await connectionStatus(env, auth.user.id));
+    }
+    if (path === "/api/massed/connect" && method === "POST") {
+      const auth = await requireAuth(env, request);
+      const body = await readJson(request);
+      return json(await startConnect(env, auth, request, body.scope === "full"));
+    }
+    if (path === "/api/massed/oauth/callback" && method === "GET") {
+      const auth = await requireAuth(env, request);
+      return Response.redirect(new URL(await finishConnect(env, auth, request), url.origin).toString(), 302);
+    }
+    if (path === "/api/massed/disconnect" && method === "POST") {
+      const auth = await requireAuth(env, request);
+      return json(await disconnect(env, auth.user.id));
+    }
+    if (path === "/api/massed/probe" && method === "GET") {
+      const auth = await requireAuth(env, request);
+      return json(await probeConnection(env, auth.user.id));
+    }
+
     if (path.startsWith("/api/")) return err(404, "Not found");
 
     if (path === "/" || path === "/index.html") {
@@ -264,6 +341,48 @@ export async function handleRequest(request: Request, env: Env, ctx: ExecutionCo
     }
     return err(status, message);
   }
+}
+
+async function teamOverview(env: Env, isAdmin: boolean) {
+  const members = await env.DB.prepare(
+    `SELECT u.id, u.email, u.role, u.credit_cents, u.spent_cents, u.max_concurrent, u.allowed_gpus, u.created_at,
+      (SELECT COUNT(*) FROM instances i WHERE i.user_id = u.id AND i.status IN ('launching','running')) AS running,
+      (SELECT COALESCE(SUM(i.price_cents_per_hour),0) FROM instances i WHERE i.user_id = u.id AND i.status IN ('launching','running')) AS burn_cents_per_hour
+     FROM users u ORDER BY u.role = 'admin' DESC, u.created_at ASC`,
+  ).all();
+  const invites = isAdmin
+    ? await env.DB.prepare("SELECT email, role, credit_cents, max_concurrent, allowed_gpus, created_at FROM invites ORDER BY created_at DESC").all()
+    : { results: [] };
+  const running = await env.DB.prepare(
+    `SELECT i.id, i.user_id, u.email, i.name, i.product_name, i.region_name, i.status, i.price_cents_per_hour, i.launched_at
+     FROM instances i JOIN users u ON u.id = i.user_id
+     WHERE i.status IN ('launching','running') ORDER BY i.launched_at DESC`,
+  ).all();
+  return {
+    members: members.results ?? [],
+    invites: invites.results ?? [],
+    running: running.results ?? [],
+  };
+}
+
+async function createInvite(env: Env, adminId: string, body: Record<string, unknown>) {
+  const email = String(body.email ?? "").trim().toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw new HttpError(400, "Invalid email");
+  if (await env.DB.prepare("SELECT 1 FROM users WHERE email = ?").bind(email).first()) {
+    throw new HttpError(409, "That person already has an account");
+  }
+  const credit = Math.max(0, Math.floor(Number(body.credit_cents) || 0));
+  const cap = Math.max(0, Math.min(32, Math.floor(Number(body.max_concurrent ?? 1))));
+  const role = body.role === "admin" ? "admin" : "user";
+  const gpus = Array.isArray(body.allowed_gpus) && body.allowed_gpus.length ? body.allowed_gpus.map(String) : ["*"];
+  await env.DB.prepare(
+    `INSERT OR REPLACE INTO invites (email, role, credit_cents, max_concurrent, allowed_gpus, invited_by, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  )
+    .bind(email, role, credit, cap, JSON.stringify(gpus), adminId, new Date().toISOString())
+    .run();
+  await audit(env.DB, adminId, "team.invite", { email, role, credit, cap });
+  return { invite: { email, role, credit_cents: credit, max_concurrent: cap } };
 }
 
 async function adminUserDetail(env: Env, userId: string) {
@@ -355,12 +474,12 @@ async function usageReport(env: Env, userId: string | null) {
   const sql = userId
     ? `SELECT u.id, u.instance_id, u.cents, u.hours, u.created_at, i.name AS instance_name, i.product_name
        FROM usage_events u LEFT JOIN instances i ON i.id = u.instance_id
-       WHERE u.user_id = ? ORDER BY u.created_at DESC LIMIT 500`
+       WHERE u.user_id = ? ORDER BY u.created_at DESC LIMIT 3000`
     : `SELECT u.id, u.instance_id, u.cents, u.hours, u.created_at, i.name AS instance_name, i.product_name, usr.email
        FROM usage_events u
        LEFT JOIN instances i ON i.id = u.instance_id
        JOIN users usr ON usr.id = u.user_id
-       ORDER BY u.created_at DESC LIMIT 500`;
+       ORDER BY u.created_at DESC LIMIT 3000`;
   const stmt = userId ? env.DB.prepare(sql).bind(userId) : env.DB.prepare(sql);
   const rows = await stmt.all<UsageEvent>();
   const events = rows.results ?? [];

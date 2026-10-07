@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="theme-color" content="#f6f1ea">
+<title>Connect Massed Compute</title>
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="preload" href="/fonts/inter-latin.woff2" as="font" type="font/woff2" crossorigin>
+<style>
+  @font-face {
+    font-family: "Inter";
+    font-style: normal;
+    font-weight: 400 800;
+    font-display: swap;
+    src: url("/fonts/inter-latin.woff2") format("woff2");
+  }
+  :root {
+    --bg: #f6f1ea; --panel: #fffcf8; --panel-2: #fdf7f0; --panel-3: #f4ece1;
+    --ink: #2a221c; --ink-2: #4b4038; --muted: #7a6a5c; --muted-2: #a08d7c;
+    --line: #ece0d2; --line-2: #e0d0bd;
+    --accent: #8d5a38; --accent-ink: #fffaf4;
+    --accent-grad: linear-gradient(135deg, #a06840 0%, #8d5a38 58%, #7b4a2c 100%);
+    --ok: #3f6b4e; --ok-soft: #eaf2ea; --ok-line: #cfdfd1;
+    --bad: #a33d2f; --bad-soft: #fbeeeb; --bad-line: #ecd0c9;
+    --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, monospace;
+    --sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    --sh-1: 0 1px 2px rgba(42,34,28,.04), 0 1px 3px rgba(42,34,28,.05);
+    --sh-2: 0 8px 20px -10px rgba(42,34,28,.18), 0 2px 6px -2px rgba(42,34,28,.06);
+    --ease: cubic-bezier(.22,.8,.28,1);
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; background: var(--bg); color: var(--ink);
+    font: 14px/1.5 var(--sans);
+    -webkit-font-smoothing: antialiased;
+    background-image:
+      radial-gradient(760px 420px at 8% -10%, rgba(192,138,92,.22), transparent 62%),
+      radial-gradient(680px 420px at 98% -4%, rgba(194,139,60,.18), transparent 60%);
+    background-attachment: fixed;
+  }
+  main { max-width: 760px; margin: 0 auto; padding: 56px 20px 80px; }
+  h1 { font-size: 25px; font-weight: 700; letter-spacing: -.028em; margin: 0 0 6px; }
+  p.lead { color: var(--muted); margin: 0 0 26px; max-width: 62ch; font-size: 13.5px; }
+  .card {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 16px;
+    padding: 20px 22px; margin-bottom: 16px; box-shadow: var(--sh-1);
+  }
+  .card > p:first-child { margin-top: 0; }
+  .card > p:last-child { margin-bottom: 0; }
+  .row { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+  button, a.btn {
+    font: inherit; font-weight: 550; padding: 9px 14px; border-radius: 12px;
+    border: 1px solid var(--line-2); background: var(--panel); color: var(--ink-2);
+    cursor: pointer; text-decoration: none; white-space: nowrap;
+    transition: background .16s, border-color .16s, transform .16s var(--ease);
+  }
+  button:hover, a.btn:hover { border-color: var(--accent); background: var(--panel-2); transform: translateY(-1px); text-decoration: none; }
+  button.primary, a.btn.primary {
+    background: var(--accent-grad); border-color: transparent; color: var(--accent-ink);
+    box-shadow: 0 8px 18px -9px rgba(141,90,56,.95);
+  }
+  button.primary:hover, a.btn.primary:hover { filter: brightness(1.05); }
+  button:disabled { opacity: .5; cursor: default; transform: none; }
+  .muted { color: var(--muted); }
+  .badge {
+    display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px;
+    font-size: 11px; font-weight: 650; border: 1px solid var(--line); background: var(--panel-3); color: var(--muted);
+  }
+  .badge::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+  .badge.ok { background: var(--ok-soft); color: var(--ok); border-color: var(--ok-line); }
+  .badge.bad { background: var(--bad-soft); color: var(--bad); border-color: var(--bad-line); }
+  table { width: 100%; border-collapse: collapse; margin-top: 12px; font-size: 13px; }
+  th, td { text-align: left; padding: 9px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th {
+    color: var(--muted-2); font-weight: 650; font-size: 10.5px; text-transform: uppercase;
+    letter-spacing: .075em; padding-bottom: 8px;
+  }
+  tbody tr:last-child td { border-bottom: 0; }
+  code {
+    font: 12px var(--mono); background: var(--panel-3); border: 1px solid var(--line);
+    border-radius: 6px; padding: 1px 5px;
+  }
+  .notice {
+    display: flex; align-items: center; gap: 9px; padding: 11px 14px; border-radius: 12px;
+    margin-bottom: 16px; border: 1px solid var(--line); background: var(--panel);
+    font-size: 13px; font-weight: 500; animation: rise .35s var(--ease) both;
+  }
+  .notice::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; flex-shrink: 0; }
+  .notice:empty { display: none; }
+  .notice.ok { background: var(--ok-soft); border-color: var(--ok-line); color: var(--ok); }
+  .notice.bad { background: var(--bad-soft); border-color: var(--bad-line); color: var(--bad); }
+  @keyframes rise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+  @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
+</style>
+</head>
+<body>
+<main>
+  <h1>Massed Compute connection</h1>
+  <p class="lead">Link your own Massed Compute account with Massed's sign-in page. We never see your password, and you can disconnect here or under Settings &rarr; Connected Apps on Massed.</p>
+
+  <div id="notice"></div>
+
+  <div class="card" id="status">Loading…</div>
+
+  <div class="card" id="probe" hidden>
+    <div class="row" style="justify-content:space-between">
+      <strong>What this connection can read</strong>
+      <span class="muted" id="probeMeta"></span>
+    </div>
+    <div id="probeBody"></div>
+  </div>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;" }[c]));
+
+async function api(path, opts) {
+  const res = await fetch(path, { credentials: "same-origin", ...opts });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw Object.assign(new Error(data.error || res.statusText), { status: res.status });
+  return data;
+}
+
+function notice(kind, text) {
+  $("notice").innerHTML = `<div class="notice ${kind}">${esc(text)}</div>`;
+}
+
+async function render() {
+  const q = new URLSearchParams(location.search);
+  if (q.get("connected")) notice("ok", "Connected to Massed Compute.");
+  if (q.get("error")) notice("bad", `Massed said: ${q.get("error")}`);
+  if (q.has("connected") || q.has("error")) history.replaceState({}, "", location.pathname);
+
+  let s;
+  try {
+    s = await api("/api/massed/connection");
+  } catch (e) {
+    $("status").innerHTML = e.status === 401
+      ? `<p>Sign in first.</p><div class="row"><a class="btn primary" href="/">Go to sign in</a></div>`
+      : `<p class="bad">${esc(e.message)}</p>`;
+    return;
+  }
+
+  if (!s.connected) {
+    $("status").innerHTML = `
+      <p><strong>Not connected.</strong> You will approve read-only access on Massed's own page: running VMs, GPU stock and prices, images, SSH keys and billing settings.</p>
+      <div class="row"><button class="primary" id="connect">Connect Massed Compute</button></div>`;
+    $("connect").onclick = connect;
+    $("probe").hidden = true;
+    return;
+  }
+
+  $("status").innerHTML = `
+    <p><span class="badge ok">Connected</span> <span class="muted">· ${esc(s.scope)} · since ${esc(new Date(s.connected_at).toLocaleString())}</span></p>
+    ${s.last_error ? `<p class="badge bad">Last error: ${esc(s.last_error)}</p>` : ""}
+    <div class="row">
+      <button class="primary" id="run">Test what we can pull</button>
+      <button id="drop">Disconnect</button>
+    </div>`;
+  $("run").onclick = runProbe;
+  $("drop").onclick = async () => {
+    if (!confirm("Disconnect Massed Compute? You can connect again later.")) return;
+    await api("/api/massed/disconnect", { method: "POST" });
+    $("probe").hidden = true;
+    notice("", "Disconnected.");
+    render();
+  };
+}
+
+async function connect() {
+  $("connect").disabled = true;
+  try {
+    const { url } = await api("/api/massed/connect", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+    location.href = url;
+  } catch (e) {
+    notice("bad", e.message);
+    $("connect").disabled = false;
+  }
+}
+
+async function runProbe() {
+  const btn = $("run");
+  btn.disabled = true; btn.textContent = "Testing…";
+  try {
+    const p = await api("/api/massed/probe");
+    $("probe").hidden = false;
+    $("probeMeta").textContent = `${p.tools.length} tools offered`;
+    $("probeBody").innerHTML = `<table>
+      <tr><th>Tool</th><th>Result</th><th>Fields</th></tr>
+      ${p.results.map((r) => `<tr>
+        <td><code>${esc(r.tool)}</code></td>
+        <td><span class="badge ${r.ok ? "ok" : "bad"}">${esc(r.ok ? r.summary : r.error)}</span> <span class="muted">${r.ms} ms</span></td>
+        <td class="muted">${esc((r.fields || []).join(", "))}</td></tr>`).join("")}
+    </table>
+    <p class="muted" style="margin-bottom:0">Offered but not tested here: ${esc(p.tools.filter((t) => !p.results.some((r) => r.tool === t)).join(", "))}</p>`;
+  } catch (e) {
+    notice("bad", e.message);
+    render();
+  } finally {
+    btn.disabled = false; btn.textContent = "Test what we can pull";
+  }
+}
+
+render();
+</script>
+</body>
+</html>
