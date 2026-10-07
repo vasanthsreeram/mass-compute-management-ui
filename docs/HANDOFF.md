@@ -12,10 +12,11 @@ Source of truth for every API change. The UI session builds against this file. A
 - Task 6 (onboarding API): done, on the paths `app.js` already calls.
 - Task 7 (routing): done. `/` landing, `/app` and `/app/*` app. See [Routing](#routing).
 - Follow-up (review): runtime check of the MCP write-tool schemas, with argument remapping and a launch block on mismatch ([MCP schema check](#mcp-write-tool-schema-check)); `designate` rejects non-admins and admins without an active connection.
+- Admin sign-in by emailed code + attach step (user decision after the identity probe): done, see [Admin sign-in](#admin-sign-in-emailed-code-then-attach-massed). I now own the frontend as well.
 - UI requests round: requests 1 and 2 done, request 3 left as a product decision ([Backend answers to UI requests](#backend-answers-to-ui-requests)). End-to-end test with the real UI against the fake Massed: passed ([End-to-end test](#end-to-end-test-fake-massed-real-ui)).
 - Not done / not tested against real Massed: see [Open risks](#open-risks).
 
-Migrations to apply before deploy: `0005_lab_tracking.sql`, `0006_oauth_return.sql` (`npm run db:local`, `wrangler d1 migrations apply gpu-proxy --remote`).
+Migrations to apply before deploy: `0005_lab_tracking.sql`, `0006_oauth_return.sql` (already live), `0007_admin_email_login.sql` (`npm run db:local`, `wrangler d1 migrations apply gpu-proxy --remote`).
 
 ## Routing
 
@@ -249,3 +250,33 @@ Not covered: a real Massed (see Open risks), mobile widths, and the real transac
 ## UI bugs
 
 None found in this round. (The two 401s on first load are the unauthenticated `/api/me` and `/api/ui/capabilities` probes, which is expected.)
+
+
+## Admin sign-in: emailed code, then attach Massed
+
+Decision (user): Massed OAuth cannot be the login, because Massed gives an OAuth client no account identifier (see [massed-api-findings.md](massed-api-findings.md#identity-massed-gives-an-oauth-client-no-account-identifier-probed-2026-10-07)). Admins sign in with an emailed one-time code, then attach the lab's Massed account. Members are unchanged (email + password, invite + OTP sign-up).
+
+Migration `0007_admin_email_login.sql` (apply to remote D1): `signup_otps.purpose` (`signup` | `admin`) and a `rate_limits` table.
+
+### Endpoints (unauthenticated)
+
+- `POST /api/auth/admin/code` `{ email }` → `{ sent: true, dev_code? }` (`dev_code` only with `MOCK_MASSED=1`). Eligible emails: an existing admin, the bootstrap first user / `ADMIN_EMAIL`, or an email invited with `role: "admin"` via `POST /api/team/invites`. Otherwise **403** `code: "not_admin"` with a clear message. An existing member gets a message pointing them to the member door. Disclosure is the same as member sign-up (it says the address is not an admin here, nothing more).
+- `POST /api/auth/admin/verify` `{ email, code }` → `{ user, lab }` and sets the session cookie (same cookie and lifetime as today). `lab` is the admin lab status; if `lab.state` is `not_connected` or `lost` the UI shows the attach step. For a bootstrap or invited email the admin account is created here (no password: `password_hash` is `"!"`, so password login can never succeed for it) and the invite is consumed.
+- Codes: 6 digits, 10 minutes, 5 wrong attempts then locked (`429`). A code carries its purpose, so a member-signup code cannot sign in an admin and an admin code cannot finish a member sign-up (both return "Code expired").
+- Rate limits (`429`, `code: "rate_limited"`): one code per email per 30 seconds, 5 per email per hour, 20 per IP per hour (`CF-Connecting-IP`). The same limits now apply to `POST /api/auth/register`.
+- Existing password login (`POST /api/auth/login`) is unchanged and is what `/app?password=1` uses, so admins with a password (the live admin) are not locked out.
+
+### Login screen (`assets/app.js`)
+
+1. **"Who is signing in?"** two cards: "I run the lab" (admin) and "I'm a lab member". The choice is remembered in `localStorage` (`mc.role`); each form has a link to switch.
+2. **Admin:** email only, "Email me a code", then the code screen, then signed in. No password field.
+3. **Attach step:** right after an admin signs in, if the lab has no active Massed connection (`not_connected` or `lost`), a focused "Attach your Massed Compute account" screen: the connect button (full access, "leave Read-only access off"), "we never see your Massed password", how to revoke (Massed → Settings → Connected Apps), and **Skip for now**. After a skip, a persistent banner ("Massed Compute isn't attached yet" / "connection lost") with an Attach button stays on every page until the lab is connected. Connecting uses `POST /api/massed/connect { return_to: "app" }` and returns to `/app?massed=connected`.
+4. **Member:** unchanged (Sign in / Join with an invite, OTP).
+5. **`/app?password=1`:** hidden admin password form (no link to it from the UI); the query is removed after sign-in.
+6. The admin tour's first step is now "Attach your Massed account".
+
+### Tested (fake Massed, real browser at desktop and 390px)
+
+Role chooser and remembered choice; stranger and existing member refused with clear messages; code sign-in as bootstrap admin and as an invited admin; wrong code, locked attempts, 30-second gap, hourly cap; cross-purpose codes rejected; attach step then skip then banner then attach through the fake Massed then banner gone; reload keeps the session; sign-out reopens the admin door; `?password=1` sign-in for a password admin with no attach step when the lab is connected; no horizontal overflow on any auth screen at 390px.
+
+Not covered: real email delivery (only the local sink) and a real Massed consent screen.

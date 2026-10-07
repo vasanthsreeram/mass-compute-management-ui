@@ -1,4 +1,4 @@
-import { createSession, finishSignup, startSignup, destroySession, loginUser, publicUser, requireAdmin, requireAuth, sessionCookie, clearSessionCookie } from "./auth";
+import { createSession, finishAdminLogin, finishSignup, startAdminLogin, startSignup, destroySession, loginUser, publicUser, requireAdmin, requireAuth, sessionCookie, clearSessionCookie } from "./auth";
 import { audit, getUserById, publicUser as toPublic, type UserRow } from "./db";
 import { deviceDecide, deviceInfo, devicePoll, deviceStart } from "./device";
 import { handleLaunch, handleListInstances, handleRestart, handleTerminate, instanceDetail } from "./instances";
@@ -46,6 +46,10 @@ async function readJson(request: Request): Promise<Record<string, unknown>> {
   }
 }
 
+function clientIp(request: Request): string {
+  return request.headers.get("CF-Connecting-IP") || "unknown";
+}
+
 async function adminCount(env: Env): Promise<number> {
   const row = await env.DB.prepare("SELECT COUNT(*) AS n FROM users WHERE role = 'admin'").first<{ n: number }>();
   return row?.n ?? 0;
@@ -78,7 +82,7 @@ export async function handleRequest(request: Request, env: Env, ctx: ExecutionCo
 
     if (path === "/api/auth/register" && method === "POST") {
       const body = await readJson(request);
-      return json(await startSignup(env, String(body.email ?? ""), String(body.password ?? "")));
+      return json(await startSignup(env, String(body.email ?? ""), String(body.password ?? ""), clientIp(request)));
     }
 
     if (path === "/api/auth/verify" && method === "POST") {
@@ -87,6 +91,21 @@ export async function handleRequest(request: Request, env: Env, ctx: ExecutionCo
       const token = await createSession(env, user.id);
       return json(
         { user: publicUser(user) },
+        { headers: { "Set-Cookie": sessionCookie(token, request) } },
+      );
+    }
+
+    // Passwordless admin sign-in: emailed one-time code, then attach Massed. `lab` tells the UI whether to show the attach step.
+    if (path === "/api/auth/admin/code" && method === "POST") {
+      const body = await readJson(request);
+      return json(await startAdminLogin(env, String(body.email ?? ""), clientIp(request)));
+    }
+    if (path === "/api/auth/admin/verify" && method === "POST") {
+      const body = await readJson(request);
+      const user = await finishAdminLogin(env, String(body.email ?? ""), String(body.code ?? ""));
+      const token = await createSession(env, user.id);
+      return json(
+        { user: publicUser(user), lab: await labStatus(env, true) },
         { headers: { "Set-Cookie": sessionCookie(token, request) } },
       );
     }

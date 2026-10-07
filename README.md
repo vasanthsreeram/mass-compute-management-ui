@@ -9,7 +9,7 @@ A Cloudflare Worker in front of **one lab Massed Compute account**. An admin con
 - **Lab account:** one admin's OAuth grant (full scope) carries every Massed call over MCP. `MASSED_COMPUTE_API_KEY` is only a fallback for single-operator setups. If the grant is lost, the desk shows it lab-wide and emails the admins. See `docs/HANDOFF.md`.
 - **SSH-key launches:** members save a public key; it is injected at launch (Massed MCP redacts VM passwords)
 - **Tracking:** every launch/restart/terminate/failure with its actor (user or agent key), spend per user / key / SKU, burn over time, VMs launched outside the app flagged "unattributed", recharge-setting history, connection events, manual balance calibration
-- Email + password auth on the Worker (D1 sessions, no WorkOS)
+- **Sign-in:** members use email + password (invite + emailed OTP to join). Admins sign in with an emailed one-time code (no password), then attach the lab's Massed account. `/app?password=1` is a hidden password fallback for admins who predate codes. D1 sessions, no WorkOS
 - Per-user **proxy budget**, **GPU allowlist**, **concurrent cap**
 - **Match:** describe a job; Workers AI (`@cf/meta/llama-3.1-8b-instruct-fast`) picks the cheapest live SKU that fits
 - Per-user API keys for coding agents, plus a copy-skill
@@ -91,7 +91,7 @@ npx wrangler secret put DATA_KEY
 
 Optional single-operator fallback: `npx wrangler secret put MASSED_COMPUTE_API_KEY` (REST; the only way to read VM passwords). Set `APP_URL` in `wrangler.jsonc` to your public URL (used in emails). `MOCK_MASSED` must stay `"0"`; it is a dev-only flag.
 
-Self-hosting: deploy the Worker, apply the migrations, sign up as the first user (becomes admin), open **Fleet → Connect Massed Compute**.
+Self-hosting: deploy the Worker, apply the migrations, choose **I run the lab**, sign in with the first admin's email (the first user, or `ADMIN_EMAIL`, becomes admin), then attach Massed Compute when prompted.
 
 ## Metering
 

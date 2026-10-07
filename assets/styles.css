@@ -385,6 +385,60 @@ td code,
   padding: 1px 5px;
 }
 
+/* role picker, attach step and the "not attached" banner */
+.auth-title { font-size: 21px; margin: 0 0 6px; letter-spacing: -0.02em; }
+.auth.attach { max-width: 460px; }
+.role-pick { display: grid; gap: 10px; margin-top: 18px; }
+.role {
+  display: flex;
+  align-items: flex-start;
+  gap: 14px;
+  width: 100%;
+  text-align: left;
+  padding: 15px 16px;
+  background: var(--panel);
+  border: 1px solid var(--line-2);
+  border-radius: var(--r);
+  cursor: pointer;
+  color: var(--ink);
+  font: inherit;
+  transition: border-color 0.16s, background 0.16s, transform 0.16s var(--ease), box-shadow 0.2s;
+}
+.role:hover { border-color: var(--accent); background: var(--accent-soft); transform: translateY(-1px); box-shadow: var(--sh-1); }
+.role:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.role-ico {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 11px;
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.role-ico svg { width: 19px; height: 19px; }
+.role-txt { display: grid; gap: 3px; min-width: 0; }
+.role-txt b { font-size: 14.5px; font-weight: 650; }
+.role-txt span { font-size: 12.5px; line-height: 1.45; color: var(--muted); }
+.points { margin: 14px 0 20px; padding: 0 0 0 18px; display: grid; gap: 9px; font-size: 13px; line-height: 1.5; color: var(--ink-2); }
+.points li::marker { color: var(--accent); }
+.banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 11px 14px;
+  margin: 0 0 18px;
+  border-radius: var(--r);
+  border: 1px solid var(--warn-line);
+  background: var(--warn-soft);
+  color: var(--warn);
+  font-size: 13px;
+}
+.banner-ico { display: grid; flex: 0 0 auto; }
+.banner-ico svg { width: 18px; height: 18px; }
+.banner-txt { flex: 1; min-width: 0; line-height: 1.45; }
+.banner .primary { margin: 0; flex: 0 0 auto; width: auto; }
+
 /* ---------------------------------------------------------------- 5 surfaces */
 
 .grid { display: grid; gap: 14px; }
@@ -532,6 +586,8 @@ button.linkish {
   text-align: left;
 }
 button.linkish:hover { text-decoration: underline; }
+a.linkish { color: var(--accent); font-size: 12.5px; font-weight: 550; text-decoration: none; }
+a.linkish:hover { text-decoration: underline; }
 
 .primary.copied,
 .ghost.copied {
@@ -1757,6 +1813,9 @@ button svg { width: 15px; height: 15px; flex: none; }
   .donut-wrap { justify-content: center; }
   .stats { grid-template-columns: 1fr; }
   .auth { margin: 6vh 12px 0; padding: 24px; }
+  .banner { flex-wrap: wrap; }
+  .banner-txt { flex-basis: calc(100% - 40px); }
+  .banner .primary { width: 100%; }
   .budget-panel .grow { flex-basis: 100%; }
   .budget-panel .v { font-size: 26px; }
   .onboard .card-head { align-items: flex-start; }

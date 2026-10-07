@@ -138,6 +138,8 @@ const state = {
   showAllMachines: false,
   // auth
   authMode: "login",
+  role: undefined,
+  attach: false,
   authEmail: "",
   pending: null,
   connect: new URLSearchParams(location.search).get("connect"),
@@ -213,6 +215,7 @@ let fetchGen = 0;
 function render() {
   if (!state.user) return renderAuth();
   if (state.connect) return renderConnect();
+  if (state.attach) return renderAttach();
   ensureShell();
   paintNav();
   paintChrome();
@@ -267,6 +270,7 @@ async function logout() {
   state.user = null;
   state.tour = null;
   state.lab = null;
+  state.attach = false;
   $("#tour")?.remove();
   app.innerHTML = "";
   renderAuth();
@@ -281,7 +285,8 @@ function paintNav() {
 function paintChrome() {
   const el = $("#chrome");
   if (!el) return;
-  el.innerHTML = state.flash ? `<div class="flash ${state.flashKind === "ok" ? "good" : ""}">${esc(state.flash)}</div>` : "";
+  el.innerHTML = labBanner() + (state.flash ? `<div class="flash ${state.flashKind === "ok" ? "good" : ""}">${esc(state.flash)}</div>` : "");
+  $("#banner-attach")?.addEventListener("click", startAttach);
 }
 
 function flash(msg, kind = "err") {
@@ -360,20 +365,139 @@ function view() {
 
 // ---------------------------------------------------------------- auth
 
+// Two doors: admins get an emailed one-time code (no password) and then attach the lab's Massed account;
+// members keep email + password and the invite/OTP sign-up. The last choice is remembered on this browser.
+const ROLE_KEY = "mc.role";
+const readRole = () => { try { const v = localStorage.getItem(ROLE_KEY); return v === "admin" || v === "member" ? v : null; } catch { return null; } };
+const saveRole = (r) => { try { r ? localStorage.setItem(ROLE_KEY, r) : localStorage.removeItem(ROLE_KEY); } catch {} };
+// /app?password=1 is the hidden password sign-in for admins who predate emailed codes
+const PASSWORD_FALLBACK = new URLSearchParams(location.search).get("password") === "1";
+
+const authBrand = `<div class="brand">Massed Compute <span>desk</span></div>`;
+const authFlash = () => (state.flash ? `<div class="flash">${esc(state.flash)}</div>` : "");
+
 function renderAuth() {
-  const m = state.authMode;
-  if (m === "otp") return renderOtp();
+  if (state.authMode === "otp") return renderOtp();
+  if (state.role === undefined) state.role = readRole();
+  if (PASSWORD_FALLBACK) return renderAdminPassword();
+  if (!state.role) return renderRolePick();
+  return state.role === "admin" ? renderAdminEmail() : renderMember();
+}
+
+function chooseRole(role) {
+  state.role = role;
+  saveRole(role);
+  state.flash = "";
+  state.authMode = "login";
+  renderAuth();
+}
+
+function bindSwitchRole() {
+  for (const b of $$("[data-switch-role]")) b.addEventListener("click", () => chooseRole(b.dataset.switchRole || null));
+}
+
+function renderRolePick() {
   app.innerHTML = `
     <div class="auth">
-      <div class="brand">Massed Compute <span>desk</span></div>
+      ${authBrand}
+      <h1 class="auth-title">Who is signing in?</h1>
+      <p class="lead">Pick the one that fits. We will remember it on this browser.</p>
+      <div class="role-pick">
+        <button type="button" class="role" data-role="admin">
+          <i class="role-ico">${ICONS.chip}</i>
+          <span class="role-txt"><b>I run the lab</b><span>Admin. Sign in with a code we email you, then attach the lab's Massed Compute account.</span></span>
+        </button>
+        <button type="button" class="role" data-role="member">
+          <i class="role-ico">${ICONS.key}</i>
+          <span class="role-txt"><b>I'm a lab member</b><span>Sign in with your email and password, or join with an invite from your admin.</span></span>
+        </button>
+      </div>
+    </div>
+  `;
+  for (const b of $$("[data-role]")) b.addEventListener("click", () => chooseRole(b.dataset.role));
+}
+
+function renderAdminEmail() {
+  app.innerHTML = `
+    <div class="auth">
+      ${authBrand}
+      <h1 class="auth-title">Admin sign-in</h1>
+      <p class="lead">No password. We email you a one-time code that works for 10 minutes.</p>
+      ${authFlash()}
+      <form id="admin-form">
+        <label>Email</label>
+        <input name="email" type="email" required autocomplete="email" autofocus value="${esc(state.authEmail)}" />
+        <button class="primary" style="width:100%" type="submit">Email me a code</button>
+      </form>
+      <p class="hint" style="margin-top:14px">Only lab admins can sign in here. Right after, you attach the lab's Massed Compute account. We never see your Massed password.</p>
+      <button class="linkish" data-switch-role="member" style="margin-top:12px">I'm a lab member instead</button>
+    </div>
+  `;
+  bindSwitchRole();
+  $("#admin-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const email = String(new FormData(e.target).get("email")).trim();
+    state.authEmail = email;
+    const btn = e.target.querySelector("button[type=submit]");
+    btn.disabled = true;
+    try {
+      const data = await post("/api/auth/admin/code", { email });
+      state.pending = { email, dev_code: data.dev_code, kind: "admin" };
+      state.authMode = "otp";
+      state.flash = "";
+      renderAuth();
+    } catch (err) {
+      state.flash = err.message;
+      renderAuth();
+    }
+  });
+}
+
+function renderAdminPassword() {
+  app.innerHTML = `
+    <div class="auth">
+      ${authBrand}
+      <h1 class="auth-title">Admin password sign-in</h1>
+      <p class="lead">A fallback for admins who signed in with a password before codes existed.</p>
+      ${authFlash()}
+      <form id="admin-pw-form">
+        <label>Email</label>
+        <input name="email" type="email" required autocomplete="username" value="${esc(state.authEmail)}" />
+        <label>Password</label>
+        <input name="password" type="password" required autocomplete="current-password" />
+        <button class="primary" style="width:100%;margin-top:18px" type="submit">Sign in</button>
+      </form>
+      <a class="linkish" href="${esc(route())}" style="display:inline-block;margin-top:14px">← Email me a code instead</a>
+    </div>
+  `;
+  $("#admin-pw-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    state.authEmail = String(fd.get("email"));
+    try {
+      const data = await post("/api/auth/login", { email: fd.get("email"), password: fd.get("password") });
+      history.replaceState(null, "", route());
+      await enter(data.user, { fresh: true });
+    } catch (err) {
+      state.flash = err.message;
+      renderAuth();
+    }
+  });
+}
+
+function renderMember() {
+  const m = state.authMode;
+  app.innerHTML = `
+    <div class="auth">
+      ${authBrand}
       <div class="seg wide">
         <button type="button" data-mode="login" class="${m === "login" ? "active" : ""}">Sign in</button>
-        <button type="button" data-mode="signup" class="${m === "signup" ? "active" : ""}">Join the team</button>
+        <button type="button" data-mode="signup" class="${m === "signup" ? "active" : ""}">Join with an invite</button>
       </div>
       <p class="lead" style="margin-top:14px">${m === "login"
         ? "Welcome back."
         : "Use the email an admin invited. We'll send a 6-digit code to confirm it's you."}</p>
-      ${state.flash ? `<div class="flash">${esc(state.flash)}</div>` : ""}
+      ${authFlash()}
       <form id="auth-form">
         <label>Email</label>
         <input name="email" type="email" required autocomplete="username" value="${esc(state.authEmail)}" />
@@ -382,8 +506,10 @@ function renderAuth() {
         <button class="primary" style="width:100%;margin-top:18px" type="submit">${m === "login" ? "Sign in" : "Send me a code"}</button>
       </form>
       ${m === "login" ? `<p class="hint" style="margin-top:14px">Just looking? Demo (read-only, $0): <code>demo@massedui.vasanth.cloud</code> / <code>demo-zero</code></p>` : ""}
+      <button class="linkish" data-switch-role="admin" style="margin-top:12px">I run the lab (admin)</button>
     </div>
   `;
+  bindSwitchRole();
   for (const b of $$("[data-mode]")) b.addEventListener("click", () => { state.authMode = b.dataset.mode; state.flash = ""; renderAuth(); });
   $("#auth-form").addEventListener("submit", async (e) => {
     e.preventDefault();
@@ -392,10 +518,10 @@ function renderAuth() {
     try {
       if (m === "login") {
         const data = await post("/api/auth/login", { email: fd.get("email"), password: fd.get("password") });
-        await enter(data.user);
+        await enter(data.user, { fresh: true });
       } else {
         const data = await post("/api/auth/register", { email: fd.get("email"), password: fd.get("password") });
-        state.pending = { email: String(fd.get("email")), dev_code: data.dev_code };
+        state.pending = { email: String(fd.get("email")), dev_code: data.dev_code, kind: "signup" };
         state.authMode = "otp";
         state.flash = "";
         renderAuth();
@@ -409,26 +535,28 @@ function renderAuth() {
 
 function renderOtp() {
   const p = state.pending;
+  const admin = p.kind === "admin";
   app.innerHTML = `
     <div class="auth">
-      <div class="brand">Massed Compute <span>desk</span></div>
-      <h1 style="margin-top:18px">Check your email</h1>
+      ${authBrand}
+      <h1 class="auth-title">Check your email</h1>
       <p class="lead">We sent a 6-digit code to <b>${esc(p.email)}</b>. It expires in 10 minutes.</p>
       ${p.dev_code ? `<div class="flash good">Dev mode — your code is <b>${esc(p.dev_code)}</b></div>` : ""}
-      ${state.flash ? `<div class="flash">${esc(state.flash)}</div>` : ""}
+      ${authFlash()}
       <form id="otp-form">
         <input name="code" class="otp" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="000000" required autofocus />
-        <button class="primary" style="width:100%;margin-top:16px" type="submit">Verify & create account</button>
+        <button class="primary" style="width:100%;margin-top:16px" type="submit">${admin ? "Verify & sign in" : "Verify & create account"}</button>
       </form>
       <button class="linkish" id="otp-back" style="margin-top:14px">← Use a different email</button>
     </div>
   `;
-  $("#otp-back").addEventListener("click", () => { state.authMode = "signup"; state.flash = ""; renderAuth(); });
+  $("#otp-back").addEventListener("click", () => { state.authMode = admin ? "login" : "signup"; state.flash = ""; renderAuth(); });
   $("#otp-form").addEventListener("submit", async (e) => {
     e.preventDefault();
     try {
-      const data = await post("/api/auth/verify", { email: p.email, code: new FormData(e.target).get("code") });
-      await enter(data.user);
+      const data = await post(admin ? "/api/auth/admin/verify" : "/api/auth/verify", { email: p.email, code: new FormData(e.target).get("code") });
+      if (admin && data.lab) state.lab = data.lab;
+      await enter(data.user, { fresh: true });
     } catch (err) {
       state.flash = err.message;
       renderOtp();
@@ -436,7 +564,63 @@ function renderOtp() {
   });
 }
 
-async function enter(user) {
+// ------------------------------------------- attach the lab's Massed account
+
+const labNeedsAttach = () => isAdmin() && ["not_connected", "lost"].includes(state.lab?.state);
+
+async function startAttach() {
+  try {
+    const r = await post("/api/massed/connect", { return_to: "app" });
+    if (r?.url) location.href = r.url;
+    else flash("Could not start the Massed authorization.");
+  } catch (err) {
+    flash(err.message);
+    if (state.attach) renderAttach();
+  }
+}
+
+function renderAttach() {
+  const lost = state.lab?.state === "lost";
+  app.innerHTML = `
+    <div class="auth attach">
+      ${authBrand}
+      <h1 class="auth-title">${lost ? "Reconnect" : "Attach"} your Massed Compute account</h1>
+      <p class="lead">${lost
+        ? "Massed revoked or expired the lab's connection, so nobody can launch right now."
+        : "Your teammates launch GPUs on this account through the desk, inside the budgets you set."} It takes one click, on Massed's own page.</p>
+      <ul class="points">
+        <li>On Massed's consent screen, leave <b>Read-only access</b> switched <b>off</b>. Launching and stopping machines needs full access.</li>
+        <li>We never see your Massed password. Massed signs you in on its own page and hands the desk a token you can revoke.</li>
+        <li>Revoke it any time under <b>Massed → Settings → Connected Apps</b>.</li>
+      </ul>
+      ${authFlash()}
+      <button class="primary" id="attach-go" style="width:100%">${lost ? "Reconnect" : "Attach"} Massed Compute</button>
+      <button class="linkish" id="attach-skip" style="margin-top:14px">Skip for now</button>
+      <p class="hint" style="margin-top:10px">Until it is attached nobody can launch a GPU, and a banner stays on every page to remind you.</p>
+    </div>
+  `;
+  $("#attach-go").addEventListener("click", (e) => { e.target.disabled = true; startAttach(); });
+  $("#attach-skip").addEventListener("click", () => {
+    state.attach = false;
+    state.flash = "";
+    render();
+    refreshTab();
+  });
+}
+
+function labBanner() {
+  if (!labNeedsAttach()) return "";
+  const lost = state.lab.state === "lost";
+  return `
+    <div class="banner warn" role="status">
+      <i class="banner-ico">${ICONS.plug}</i>
+      <span class="banner-txt"><b>${lost ? "Massed connection lost." : "Massed Compute isn't attached yet."}</b>
+        ${lost ? "Members can't launch until you reconnect." : "Nobody can launch a GPU until you attach the lab's account."}</span>
+      <button class="primary slim" id="banner-attach">${lost ? "Reconnect" : "Attach now"}</button>
+    </div>`;
+}
+
+async function enter(user, opts = {}) {
   state.user = user;
   state.flash = "";
   state.pending = null;
@@ -446,10 +630,13 @@ async function enter(user) {
   autoTourArmed = false;
   if (!state.connect) state.tab = "home";
   app.innerHTML = "";
+  // the lab status decides whether a fresh admin sign-in goes straight to the attach step
+  if (user.role === "admin" && !state.lab) await refreshMe();
+  state.attach = !!opts.fresh && labNeedsAttach() && !state.connect;
   await loadOnboardRemote();
   render();
   state.playEnter = true;
-  if (!state.connect) refreshTab();
+  if (!state.connect && !state.attach) refreshTab();
 }
 
 // ------------------------------------------------- agent approval screen
@@ -1807,7 +1994,7 @@ function labCard() {
       ${Array.isArray(lab?.admins_connected) && lab.admins_connected.length
         ? `<p class="hint">Admin connections: ${lab.admins_connected.map((a) => `${esc(a.email)} (${esc(a.status)})`).join(", ")}</p>` : ""}
       <div class="actions">
-        <button class="primary slim" id="lab-connect">${lab?.state === "connected" ? "Reconnect" : "Connect Massed Compute"}</button>
+        <button class="primary slim" id="lab-connect">${lab?.state === "connected" ? "Reconnect" : "Attach Massed Compute"}</button>
         ${lab?.state === "connected" ? `<button class="ghost slim" id="lab-probe">Test access</button>
           <button class="ghost slim danger" id="lab-disconnect">Disconnect</button>` : ""}
       </div>
@@ -1905,8 +2092,8 @@ const TOUR_SEEN = "tour_seen";
 // Steps are declarative: `tab` switches first, `target` gets spotlit when it exists.
 const TOUR = {
   admin: [
-    { id: "connect", tab: "fleet", target: '[data-tour="lab"]', title: "Connect the lab's Massed account",
-      body: "Live machines, burn rate and upstream usage all come from this connection. Connect it once, and reconnect if Massed revokes the grant." },
+    { id: "connect", tab: "fleet", target: '[data-tour="lab"]', title: "Attach your Massed account",
+      body: "Signing in never touches Massed. This is where the lab's Massed Compute account gets attached, in one click on Massed's own page. Until it is attached nobody can launch; reconnect here if Massed ever revokes it." },
     { id: "invite", tab: "team", target: '[data-tour="invite"]', title: "Invite a teammate",
       body: "Add their email with a starting budget. They sign up with that address, confirm a one-time code, then launch on the lab's account." },
     { id: "limits", tab: "team", target: '[data-tour="members"]', title: "Set budgets and GPU allowlists",
@@ -2392,13 +2579,7 @@ function bindView() {
   }
 
   // ---- lab connection
-  $("#lab-connect")?.addEventListener("click", async () => {
-    try {
-      const r = await post("/api/massed/connect", { return_to: "app" });
-      if (r?.url) location.href = r.url;
-      else flash("Could not start the Massed authorization.");
-    } catch (err) { flash(err.message); }
-  });
+  $("#lab-connect")?.addEventListener("click", startAttach);
   $("#lab-designate-go")?.addEventListener("click", async () => {
     const userId = $("#lab-designate")?.value;
     if (!userId) return;

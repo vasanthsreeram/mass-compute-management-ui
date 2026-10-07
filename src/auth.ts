@@ -82,16 +82,47 @@ function randomCode(): string {
   return String(n[0] % 1_000_000).padStart(6, "0");
 }
 
-async function sendOtpEmail(env: Env, email: string, code: string): Promise<void> {
+async function sendOtpEmail(env: Env, email: string, code: string, purpose: "signup" | "admin" = "signup"): Promise<void> {
   const from = env.MAIL_FROM || "noreply@massedui.vasanth.cloud";
   if (!env.EMAIL) throw new HttpError(503, "Email is not configured on this proxy");
+  const what = purpose === "admin" ? "admin sign-in code" : "verification code";
   await env.EMAIL.send({
     to: email,
     from: { email: from, name: "Massed Compute desk" },
-    subject: `Your verification code: ${code}`,
-    text: `Your Massed Compute desk verification code is ${code}.\n\nIt expires in 10 minutes. If you did not request it, ignore this email.`,
-    html: `<p>Your Massed Compute desk verification code is</p><p style="font-size:28px;font-weight:700;letter-spacing:4px">${code}</p><p>It expires in 10 minutes. If you did not request it, ignore this email.</p>`,
+    subject: `Your ${what}: ${code}`,
+    text: `Your Massed Compute desk ${what} is ${code}.\n\nIt expires in 10 minutes. If you did not request it, ignore this email.`,
+    html: `<p>Your Massed Compute desk ${what} is</p><p style="font-size:28px;font-weight:700;letter-spacing:4px">${code}</p><p>It expires in 10 minutes. If you did not request it, ignore this email.</p>`,
   });
+}
+
+/** Fixed-window limiter. Throws 429 once `limit` hits inside `windowSec`. */
+export async function throttle(env: Env, key: string, limit: number, windowSec: number): Promise<void> {
+  const now = Math.floor(Date.now() / 1000);
+  const row = await env.DB.prepare("SELECT window_start, count FROM rate_limits WHERE key = ?")
+    .bind(key)
+    .first<{ window_start: number; count: number }>();
+  if (!row || now - row.window_start >= windowSec) {
+    await env.DB.batch([
+      env.DB.prepare("DELETE FROM rate_limits WHERE window_start < ?").bind(now - 86_400),
+      env.DB.prepare("INSERT OR REPLACE INTO rate_limits (key, window_start, count) VALUES (?, ?, 1)").bind(key, now),
+    ]);
+    return;
+  }
+  if (row.count >= limit) {
+    const mins = Math.max(1, Math.ceil((windowSec - (now - row.window_start)) / 60));
+    throw new HttpError(429, `Too many code requests. Try again in about ${mins} minute${mins === 1 ? "" : "s"}.`, "rate_limited");
+  }
+  await env.DB.prepare("UPDATE rate_limits SET count = count + 1 WHERE key = ?").bind(key).run();
+}
+
+const CODE_MIN_GAP_SEC = 30;
+async function checkCodeRequest(env: Env, email: string, ip: string): Promise<void> {
+  const recent = await env.DB.prepare("SELECT created_at FROM signup_otps WHERE email = ?").bind(email).first<{ created_at: string }>();
+  if (recent && Date.now() - Date.parse(recent.created_at) < CODE_MIN_GAP_SEC * 1000) {
+    throw new HttpError(429, "A code was just sent. Wait half a minute before asking for another.", "rate_limited");
+  }
+  await throttle(env, `otp:email:${email}`, 5, 3600);
+  await throttle(env, `otp:ip:${ip}`, 20, 3600);
 }
 
 /** Step 1: email must be whitelisted. Stores the pending password and emails a 6-digit code. */
@@ -99,6 +130,7 @@ export async function startSignup(
   env: Env,
   emailRaw: string,
   password: string,
+  ip = "unknown",
 ): Promise<{ sent: true; dev_code?: string }> {
   const email = normEmail(emailRaw);
   if (password.length < 8) throw new HttpError(400, "Password must be at least 8 characters");
@@ -112,11 +144,12 @@ export async function startSignup(
     throw new HttpError(403, "This email has not been invited. Ask a team admin to add it.");
   }
 
+  await checkCodeRequest(env, email, ip);
   const code = randomCode();
   const salt = newSalt();
   await env.DB.prepare(
-    `INSERT OR REPLACE INTO signup_otps (email, code_hash, password_hash, salt, expires_at, attempts, created_at)
-     VALUES (?, ?, ?, ?, ?, 0, ?)`,
+    `INSERT OR REPLACE INTO signup_otps (email, code_hash, password_hash, salt, expires_at, attempts, created_at, purpose)
+     VALUES (?, ?, ?, ?, ?, 0, ?, 'signup')`,
   )
     .bind(
       email,
@@ -142,8 +175,8 @@ export async function finishSignup(env: Env, emailRaw: string, code: string): Pr
   const email = normEmail(emailRaw);
   const row = await env.DB.prepare("SELECT * FROM signup_otps WHERE email = ?")
     .bind(email)
-    .first<{ code_hash: string; password_hash: string; salt: string; expires_at: number; attempts: number }>();
-  if (!row || row.expires_at < Math.floor(Date.now() / 1000)) {
+    .first<{ code_hash: string; password_hash: string; salt: string; expires_at: number; attempts: number; purpose: string }>();
+  if (!row || row.purpose !== "signup" || row.expires_at < Math.floor(Date.now() / 1000)) {
     throw new HttpError(400, "Code expired. Request a new one.");
   }
   if (row.attempts >= OTP_MAX_ATTEMPTS) throw new HttpError(429, "Too many attempts. Request a new code.");
@@ -178,6 +211,91 @@ export async function finishSignup(env: Env, emailRaw: string, code: string): Pr
     env.DB.prepare("DELETE FROM invites WHERE email = ?").bind(email),
   ]);
   await audit(env.DB, user.id, "register", { admin, invited: !!invite });
+  return user;
+}
+
+const ADMIN_REFUSAL = "This email isn't set up as a lab admin. Ask an existing admin to invite it.";
+
+function isBootstrapEmail(env: Env, email: string): boolean {
+  return !!env.ADMIN_EMAIL && email === env.ADMIN_EMAIL.trim().toLowerCase();
+}
+
+/**
+ * Admin sign-in, step 1: email a one-time code. Eligible emails are an existing admin, the bootstrap first
+ * user / ADMIN_EMAIL, or an email an admin invited with the admin role. Same disclosure as member sign-up:
+ * a refusal tells the caller the address is not an admin here, nothing more.
+ */
+export async function startAdminLogin(env: Env, emailRaw: string, ip = "unknown"): Promise<{ sent: true; dev_code?: string }> {
+  const email = normEmail(emailRaw);
+  if (email === DEMO_EMAIL) throw new HttpError(403, ADMIN_REFUSAL, "not_admin");
+  const user = await getUserByEmail(env.DB, email);
+  if (user) {
+    if (user.role !== "admin") throw new HttpError(403, "This account is a lab member. Choose “I'm a lab member” and sign in with your password.", "not_admin");
+  } else {
+    const invite = await env.DB.prepare("SELECT role FROM invites WHERE email = ?").bind(email).first<{ role: string }>();
+    const bootstrap = (await userCount(env.DB)) === 0 || isBootstrapEmail(env, email);
+    if (!bootstrap && invite?.role !== "admin") throw new HttpError(403, ADMIN_REFUSAL, "not_admin");
+  }
+
+  await checkCodeRequest(env, email, ip);
+  const code = randomCode();
+  await env.DB.prepare(
+    `INSERT OR REPLACE INTO signup_otps (email, code_hash, password_hash, salt, expires_at, attempts, created_at, purpose)
+     VALUES (?, ?, '', '', ?, 0, ?, 'admin')`,
+  )
+    .bind(email, await otpHash(email, code), Math.floor(Date.now() / 1000) + OTP_TTL_SEC, new Date().toISOString())
+    .run();
+
+  if (isMock(env)) {
+    console.log(JSON.stringify({ message: "dev admin otp", email, code }));
+    return { sent: true, dev_code: code };
+  }
+  await sendOtpEmail(env, email, code, "admin");
+  await audit(env.DB, user?.id ?? null, "admin.login_code_sent", { email });
+  return { sent: true };
+}
+
+/** Admin sign-in, step 2: check the code, then sign in (creating the admin account for a bootstrap or invited email). */
+export async function finishAdminLogin(env: Env, emailRaw: string, code: string): Promise<UserRow> {
+  const email = normEmail(emailRaw);
+  const row = await env.DB.prepare("SELECT * FROM signup_otps WHERE email = ?")
+    .bind(email)
+    .first<{ code_hash: string; expires_at: number; attempts: number; purpose: string }>();
+  if (!row || row.purpose !== "admin" || row.expires_at < Math.floor(Date.now() / 1000)) {
+    throw new HttpError(400, "Code expired. Request a new one.");
+  }
+  if (row.attempts >= OTP_MAX_ATTEMPTS) throw new HttpError(429, "Too many attempts. Request a new code.", "rate_limited");
+  if (!(await timingSafeEqualStr(await otpHash(email, code.trim()), row.code_hash))) {
+    await env.DB.prepare("UPDATE signup_otps SET attempts = attempts + 1 WHERE email = ?").bind(email).run();
+    throw new HttpError(400, "Wrong code");
+  }
+
+  let user = await getUserByEmail(env.DB, email);
+  if (user && user.role !== "admin") throw new HttpError(403, ADMIN_REFUSAL, "not_admin");
+  if (!user) {
+    // Re-check eligibility: the invite may have been revoked between the two steps.
+    const invite = await env.DB.prepare("SELECT role FROM invites WHERE email = ?").bind(email).first<{ role: string }>();
+    const bootstrap = (await userCount(env.DB)) === 0 || isBootstrapEmail(env, email);
+    if (!bootstrap && invite?.role !== "admin") throw new HttpError(403, ADMIN_REFUSAL, "not_admin");
+    user = {
+      id: crypto.randomUUID(),
+      email,
+      // No password: '!' is not a valid hash, so password login can never succeed for this account.
+      password_hash: "!",
+      salt: "!",
+      role: "admin",
+      credit_cents: 0,
+      spent_cents: 0,
+      allowed_gpus: JSON.stringify(["*"]),
+      max_concurrent: 8,
+      created_at: new Date().toISOString(),
+    };
+    await insertUser(env.DB, user);
+    await env.DB.prepare("DELETE FROM invites WHERE email = ?").bind(email).run();
+    await audit(env.DB, user.id, "register", { admin: true, via: "email_code" });
+  }
+  await env.DB.prepare("DELETE FROM signup_otps WHERE email = ?").bind(email).run();
+  await audit(env.DB, user.id, "admin.login", { via: "email_code" });
   return user;
 }
 

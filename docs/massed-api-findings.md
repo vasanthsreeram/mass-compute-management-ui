@@ -64,6 +64,24 @@ Consequence: a "Login with Massed Compute" flow is feasible and never touches th
 
 The test client (`94f32b07-563b-4cab-9784-1afac3e3023c`) is still registered. Remove it under Settings → Apps if unwanted.
 
+### Identity: Massed gives an OAuth client no account identifier (probed 2026-10-07)
+
+Probed with `scripts/massed-identity-probe.mjs` (read-only grant on the operator account, revoked afterwards; no token or value was written anywhere). Everything an OAuth client can reach was checked for a stable per-account value:
+
+| Source | What it returned |
+|--------|------------------|
+| Discovery document | `issuer`, authorize/token/registration/revocation endpoints and a few capability lists. No `userinfo_endpoint`, no `introspection_endpoint`, no `jwks_uri`. `/.well-known/openid-configuration` and `/.well-known/jwks.json` are 404 |
+| Token response | `access_token`, `token_type`, `expires_in`, `refresh_token`, `scope`. Nothing else, no `id_token` |
+| Access and refresh tokens | Opaque 48-character strings, not JWTs, so no `sub` or `email` claim |
+| `/api/oauth/userinfo`, `/oauth/userinfo`, `/api/userinfo`, `/api/me`, `/api/oauth/introspect` | 307 to the login page (browser-session only) |
+| `/api/auth/session` with the Bearer token | 200 with no fields (the dashboard's session endpoint; an OAuth token has no session) |
+| MCP `initialize` | `serverInfo.name` is the product (`massed-compute-vm-marketplace`), instructions are generic |
+| MCP `account_token_validation` | `{message}` only |
+| MCP `account_billing` | `billingMethod`, `rechargeThresholdCents`, `rechargeThreshold`, `rechargeAmountCents`, `rechargeAmount`. No account, customer or team id |
+| MCP `ssh_keys_list`, `instances_list` | Empty for that account at the time. Earlier readings of `instances_list` showed no owner or group field |
+
+So a "Sign in with Massed Compute" can prove the person controls *some* Massed account, but nothing tells us *which* one. Options and the recommendation are in the report that accompanied this probe; no login feature was built on a guess.
+
 ### Now the lab account (backend build, 2026-10-07)
 
 The OAuth connection is no longer a per-user read-only extra. One admin's full-scope grant is "the lab account" and carries every Massed call over MCP (see [HANDOFF.md](HANDOFF.md#the-lab-account)). Only admins connect. The write tools are called with REST-mirroring argument names that are **unverified against real Massed**; they were exercised only against a local fake.
