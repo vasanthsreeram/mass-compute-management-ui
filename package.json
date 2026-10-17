@@ -8,10 +8,18 @@
     "url": "git+https://github.com/vasanthsreeram/mass-compute-management-ui.git"
   },
   "scripts": {
+    "setup": "node scripts/setup.mjs",
     "dev": "wrangler dev --port 8787",
     "deploy": "wrangler deploy",
     "types": "wrangler types",
     "db:local": "wrangler d1 migrations apply gpu-proxy --local"
+  },
+  "cloudflare": {
+    "bindings": {
+      "SESSION_SECRET": { "description": "Long random string that signs sign-in sessions. Generate one: `openssl rand -base64 32`." },
+      "DATA_KEY": { "description": "Long random string that encrypts the stored Massed Compute tokens. **Never change it later**, or the Massed connection must be redone." },
+      "ADMIN_EMAIL": { "description": "Your email. The first admin account is created for this address, then you attach Massed Compute." }
+    }
   },
   "devDependencies": {
     "typescript": "^5.9.2",

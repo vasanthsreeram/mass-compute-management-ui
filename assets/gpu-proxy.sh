@@ -6,6 +6,8 @@
 #   gpu-proxy api GET /api/me     call the proxy; the token is attached for you
 #   gpu-proxy api POST /api/instances '{"productName":"gpu_1x_a6000"}'
 #   gpu-proxy logout              forget the token
+#   gpu-proxy save [--tag task-end]   back up the workspace now   (on a VM with the backup agent)
+#   gpu-proxy restore [snapshot]      restore the workspace        (on a VM with the backup agent)
 #
 # The token is only ever written to the file below. It is never printed.
 
@@ -87,5 +89,9 @@ case "$1" in
   status) cmd_api GET /api/me ;;
   api) shift; cmd_api "$@" ;;
   logout) rm -f "$TOKEN_FILE"; echo "Disconnected." ;;
-  *) sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
+  save|restore)
+    # Backups are done by the agent that the desk installs on its VMs; this is a thin pass-through.
+    if command -v gpu-proxy-agent >/dev/null 2>&1; then exec gpu-proxy-agent "$@"; fi
+    echo "No backup agent here. It is installed automatically on VMs launched from the desk." >&2; exit 1 ;;
+  *) sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 1 ;;
 esac

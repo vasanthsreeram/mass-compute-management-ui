@@ -1,6 +1,8 @@
 import { createSession, finishAdminLogin, finishSignup, startAdminLogin, startSignup, destroySession, loginUser, publicUser, requireAdmin, requireAuth, sessionCookie, clearSessionCookie } from "./auth";
 import { audit, getUserById, publicUser as toPublic, type UserRow } from "./db";
 import { deviceDecide, deviceInfo, devicePoll, deviceStart } from "./device";
+import { adminBackups, agentBackup, agentEnroll, agentFinalDone, agentHeartbeat, backupSettings, devBackdate, listBackups, patchBackupSettings, requestBackup, setUserQuota, wipeBackups } from "./backup";
+import { handleRestic } from "./restic";
 import { handleLaunch, handleListInstances, handleRestart, handleTerminate, instanceDetail } from "./instances";
 import { getAccountSnapshot, getBilling, isMock, listImages, listInventory, listRunningInstances } from "./massed";
 import { designateLabAdmin, getSetting, labStatus, setSetting } from "./lab";
@@ -134,6 +136,22 @@ export async function handleRequest(request: Request, env: Env, ctx: ExecutionCo
       return new Response(text, { headers: { "Content-Type": "text/x-shellscript; charset=utf-8" } });
     }
 
+    // The backup agent that runs on a VM (same placeholder trick as gpu-proxy.sh).
+    if (path === "/gpu-proxy-agent.sh" && method === "GET") {
+      const asset = await env.ASSETS.fetch(new URL("/gpu-proxy-agent.sh", request.url));
+      const text = (await asset.text()).replaceAll("__GPU_PROXY_URL__", url.origin);
+      return new Response(text, { headers: { "Content-Type": "text/x-shellscript; charset=utf-8" } });
+    }
+
+    // restic REST API on R2 (Basic auth with a VM credential), and the agent endpoints that credential also opens.
+    if (path.startsWith("/restic/")) return handleRestic(env, request);
+    if (path === "/api/agent/enroll" && method === "POST") {
+      return json(await agentEnroll(env, await readJson(request), url.origin));
+    }
+    if (path === "/api/agent/heartbeat" && method === "POST") return json(await agentHeartbeat(env, request));
+    if (path === "/api/agent/backup" && method === "POST") return json(await agentBackup(env, request, await readJson(request)));
+    if (path === "/api/agent/final-done" && method === "POST") return json(await agentFinalDone(env, request, ctx));
+
     if (path === "/api/auth/login" && method === "POST") {
       const body = await readJson(request);
       const user = await loginUser(env, String(body.email ?? ""), String(body.password ?? ""));
@@ -200,11 +218,12 @@ export async function handleRequest(request: Request, env: Env, ctx: ExecutionCo
         imageId: typeof body.imageId === "number" ? body.imageId : undefined,
         regionName: body.regionName ? String(body.regionName) : undefined,
         sshPublicKey: body.sshPublicKey ? String(body.sshPublicKey) : undefined,
-      });
+        backups: body.backups === false ? false : undefined,
+      }, env.APP_URL || url.origin);
       return json({ instance: inst }, { status: 201 });
     }
 
-    const instMatch = path.match(/^\/api\/instances\/([^/]+)(?:\/(restart|terminate))?$/);
+    const instMatch = path.match(/^\/api\/instances\/([^/]+)(?:\/(restart|terminate|backup))?$/);
     if (instMatch && method === "GET" && !instMatch[2]) {
       const auth = await requireAuth(env, request);
       return json({ instance: await instanceDetail(env, auth, instMatch[1]) });
@@ -215,7 +234,23 @@ export async function handleRequest(request: Request, env: Env, ctx: ExecutionCo
     }
     if (instMatch?.[2] === "terminate" && method === "POST") {
       const auth = await requireAuth(env, request);
-      return json(await handleTerminate(env, auth, instMatch[1]));
+      const body = await readJson(request);
+      return json(await handleTerminate(env, auth, instMatch[1], { force: body.force === true }));
+    }
+    if (instMatch?.[2] === "backup" && method === "POST") {
+      const auth = await requireAuth(env, request);
+      return json(await requestBackup(env, auth, instMatch[1]));
+    }
+
+    // Member backups: usage, snapshots, per-machine state. DELETE wipes the member's whole repository.
+    if (path === "/api/backups" && method === "GET") {
+      const auth = await requireAuth(env, request);
+      return json(await listBackups(env, auth.user.id));
+    }
+    if (path === "/api/backups" && method === "DELETE") {
+      const auth = await requireAuth(env, request);
+      if (!env.BACKUPS) throw new HttpError(503, "Backups are not enabled on this desk");
+      return json({ ok: true, ...(await wipeBackups(env, auth.user.id)) });
     }
 
     if (path === "/api/usage" && method === "GET") {
@@ -263,7 +298,7 @@ export async function handleRequest(request: Request, env: Env, ctx: ExecutionCo
 
     if (path === "/api/admin/settings" && method === "GET") {
       await requireAdmin(env, request);
-      return json({ members_see_team_spend: await membersSeeTeamSpend(env) });
+      return json({ members_see_team_spend: await membersSeeTeamSpend(env), ...(await backupSettings(env)) });
     }
     if (path === "/api/admin/settings" && method === "PATCH") {
       const auth = await requireAdmin(env, request);
@@ -272,7 +307,23 @@ export async function handleRequest(request: Request, env: Env, ctx: ExecutionCo
         await setSetting(env, "members_see_team_spend", body.members_see_team_spend ? "1" : "0");
         await audit(env.DB, auth.user.id, "settings.members_see_team_spend", { value: body.members_see_team_spend });
       }
-      return json({ members_see_team_spend: await membersSeeTeamSpend(env) });
+      await patchBackupSettings(env, auth.user.id, body);
+      return json({ members_see_team_spend: await membersSeeTeamSpend(env), ...(await backupSettings(env)) });
+    }
+
+    if (path === "/api/admin/backups" && method === "GET") {
+      await requireAdmin(env, request);
+      return json(await adminBackups(env));
+    }
+    const quotaMatch = path.match(/^\/api\/admin\/users\/([^/]+)\/backup-quota$/);
+    if (quotaMatch && method === "PATCH") {
+      const auth = await requireAdmin(env, request);
+      return json(await setUserQuota(env, auth.user.id, quotaMatch[1], await readJson(request)));
+    }
+    // MOCK_MASSED only: age an enrollment / heartbeat / drain so tests can reach the timeout paths.
+    if (path === "/api/dev/backdate" && method === "POST" && isMock(env)) {
+      await requireAdmin(env, request);
+      return json(await devBackdate(env, await readJson(request)));
     }
 
     if (path === "/api/admin/audit" && method === "GET") {
@@ -633,10 +684,12 @@ async function adminPatchUser(
     allowed = JSON.stringify(parseGpus(body.allowed_gpus).length ? parseGpus(body.allowed_gpus) : body.allowed_gpus.split(",").map((s) => s.trim()).filter(Boolean));
   }
 
+  // A raise is a new grant: remember it as the budget baseline the backup drain (10%) is measured against.
+  const budget = credit > user.credit_cents ? credit : user.budget_cents ?? credit;
   await env.DB.prepare(
-    "UPDATE users SET role = ?, credit_cents = ?, max_concurrent = ?, allowed_gpus = ? WHERE id = ?",
+    "UPDATE users SET role = ?, credit_cents = ?, max_concurrent = ?, allowed_gpus = ?, budget_cents = ? WHERE id = ?",
   )
-    .bind(role, credit, maxConcurrent, allowed, userId)
+    .bind(role, credit, maxConcurrent, allowed, budget, userId)
     .run();
   await audit(env.DB, adminId, "admin.user.patch", { userId, role, credit, maxConcurrent, allowed });
   const next = await getUserById(env.DB, userId);

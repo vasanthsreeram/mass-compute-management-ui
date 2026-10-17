@@ -16,7 +16,9 @@ Source of truth for every API change. The UI session builds against this file. A
 - UI requests round: requests 1 and 2 done, request 3 left as a product decision ([Backend answers to UI requests](#backend-answers-to-ui-requests)). End-to-end test with the real UI against the fake Massed: passed ([End-to-end test](#end-to-end-test-fake-massed-real-ui)).
 - Not done / not tested against real Massed: see [Open risks](#open-risks).
 
-Migrations to apply before deploy: `0005_lab_tracking.sql`, `0006_oauth_return.sql` (already live), `0007_admin_email_login.sql` (`npm run db:local`, `wrangler d1 migrations apply gpu-proxy --remote`).
+- R2 backup loop (issue #1): backend done, see [R2 backups](#r2-backups). UI not started.
+
+Migrations to apply before deploy: `0008_r2_backups.sql` (and create the bucket: `wrangler r2 bucket create gpu-proxy-backups`), plus `0005_lab_tracking.sql`, `0006_oauth_return.sql` (already live), `0007_admin_email_login.sql` (`npm run db:local`, `wrangler d1 migrations apply gpu-proxy --remote`).
 
 ## Routing
 
@@ -280,3 +282,87 @@ Migration `0007_admin_email_login.sql` (apply to remote D1): `signup_otps.purpos
 Role chooser and remembered choice; stranger and existing member refused with clear messages; code sign-in as bootstrap admin and as an invited admin; wrong code, locked attempts, 30-second gap, hourly cap; cross-purpose codes rejected; attach step then skip then banner then attach through the fake Massed then banner gone; reload keeps the session; sign-out reopens the admin door; `?password=1` sign-in for a password admin with no attach step when the lab is connected; no horizontal overflow on any auth screen at 390px.
 
 Not covered: real email delivery (only the local sink) and a real Massed consent screen.
+
+## R2 backups
+
+Each member gets a restic repository in R2. The Worker is the restic server (REST API v2), so VMs never hold R2 keys. Code: `src/backup.ts` (enroll, agent API, member/admin API), `src/restic.ts` (restic endpoints), `src/drain.ts` (back up, then kill). Agent: `assets/gpu-proxy-agent.sh`, served at `/gpu-proxy-agent.sh`.
+
+Setup: `wrangler r2 bucket create gpu-proxy-backups` (binding `BACKUPS` in `wrangler.jsonc`), apply migration `0008`. With no bucket binding, backups are simply off (launches carry no command).
+
+### How it works
+
+1. **Launch.** `handleLaunch` mints a single-use enrollment token (10 minutes, only its hash stored, bound to the instance row) and sends `command: curl -fsSL <APP_URL>/gpu-proxy-agent.sh | sh -s -- enroll gpe_…` to Massed. No long-lived key is ever in the command (it is readable back from Massed). Skipped when: `backups:false` in the launch body, an admin turned backups off, no `BACKUPS` binding, or Massed's `instances_launch` schema has no `command` property (see schema check: `command` is an *optional* expected argument, a missing property does not block launches).
+2. **Enroll** on the VM: `POST /api/agent/enroll` trades the token for a VM credential (`vmc_…`, hash stored) scoped to that user's prefix and that instance. The agent installs restic, writes `/etc/gpu-proxy/agent.env` (0600), restores the latest snapshot into `~/work`, installs `gpu-proxy-agent.service` (loop) and `gpu-proxy-shutdown.service` (last backup at shutdown, best effort), and symlinks `gpu-proxy` so `gpu-proxy save` / `restore` work.
+3. **Loop.** Backup every 5 min (`restic backup --host workspace --pack-size 32 --exclude-caches`, excludes `.cache .venv venv node_modules __pycache__ *.pyc`, `--tag periodic`), report to the desk, heartbeat every 45 s (own background loop, so it keeps beating during a long backup), `restic forget --keep-last 30 --prune` daily.
+4. **Credentials die with the VM.** A credential only authenticates while its instance is `launching|running`, and `terminateRow` stamps `revoked_at`. A new enroll for the same instance revokes the old credential.
+
+Restic password: HKDF-SHA256 of `DATA_KEY` per member (`salt gpu-proxy-restic-v1`, info `restic:<user_id>`). The Worker can re-derive it, so the Worker (and anyone holding `DATA_KEY`) can decrypt backups. Client-side-only encryption is future work. Rotating `DATA_KEY` would orphan every repository: do not.
+
+### Agent endpoints (auth: `Authorization: Bearer vmc_…`, except enroll)
+
+- `POST /api/agent/enroll` `{ token, hostname? }` -> `{ repository: "rest:https://vm:<cred>@<host>/restic/<user_id>/", credential, password, heartbeat_seconds: 45, backup_seconds: 300, work_dir: "~/work", host_tag: "workspace", quota_bytes, instance_id }`. 403 `bad_token` when unknown, expired, already used (atomic) or the VM is gone.
+- `POST /api/agent/heartbeat` `{ bytes?, last_snapshot? }` -> `{ final_backup: bool, backup_now: bool }`. Sets `last_heartbeat_at`. `backup_now` is delivered once; `final_backup` stays true while draining.
+- `POST /api/agent/backup` `{ snapshot_id, bytes_added, total_bytes, tag }` -> `{ ok }`. Inserts a `backups` row and sets `instances.last_backup_at`.
+- `POST /api/agent/final-done` `{ snapshot_id }` -> `{ ok, terminating: true, snapshot_id }`. 409 `not_draining` if no final backup was requested; 409 `no_snapshot` unless a `/backup` report exists with `created_at >= drain_started_at`. On success the VM is terminated (`vm_events` with `backup_before_kill: true`).
+
+### restic endpoints (Basic auth `vm:<credential>`)
+
+`/restic/<user_id>/...` implements restic REST v2: `POST /?create=true`, `HEAD|GET|POST|DELETE /config`, `/{data,keys,locks,snapshots,index}/<64 hex id>`, `GET /<type>/` (with `Accept: application/vnd.x.restic.rest.v2` -> `[{name,size}]`, else `["name"]`; served from D1 `backup_objects`, not R2 list). `GET` supports `Range` (206 with `Content-Range`, including `bytes=-n`). 401 bad/revoked credential, 403 other user's prefix (`wrong_prefix`), 411 no `Content-Length`, **413** object over 95 MB (Workers' body limit is 100 MB; restic `--pack-size 32` keeps packs far below), **507** `quota_exceeded`. Quota is reserved atomically in D1 (`backup_usage.used_bytes`) before the write and rolled back if the upload fails; each PUT/DELETE logs `{userId,key,size}`. `/config` cannot be overwritten (403).
+
+### Budget reserve and drain-before-kill (cron, `src/drain.ts`)
+
+- Baseline: `users.budget_cents`, the credit at the last grant. Set from the invite on sign-up, and set to the new credit whenever an admin *raises* credit via `PATCH /api/admin/users/:id`. (A top-up while draining stands the drain down.)
+- A member is **low** when `credit_cents <= 10% of budget_cents` OR `credit_cents < reserve`, reserve = cost of their running VMs for 10 minutes (2 ticks). That 10% is intentionally held back to pay for the final backup minutes, so with agents on, a VM ends at about 10% of budget, not at $0. Admins are never budget-drained.
+- Low member, VM with `backup_state ok` and a heartbeat in the last 3 minutes -> `draining` (`drain_reason budget`, `vm_events` kind `backup_drain`). Next heartbeat sees `final_backup:true` (state becomes `final_requested`). The agent backs up, reports, calls `final-done`, and the VM is terminated at once (no waiting for the next tick). Cron fallbacks: 10 minutes after `drain_started_at`, or no heartbeat for 3 minutes -> terminate anyway (`backup_before_kill:false`). A `done` row whose terminate failed is retried every tick.
+- A VM with no agent, or a stale one while the member is at $0: the old immediate kill at $0 (`why: "no backup agent"` / `"agent not responding"`).
+- `POST /api/admin/meter` result gained `drained`.
+- `vm_events.detail` of `terminate` / `budget_kill` now always carries `backup_before_kill` (bool); with a backup also `snapshot_id`, `waited_s`; without one `why` (`forced`, `no backup agent`, `agent not responding`, `drain deadline reached`, `agent silent for 3 minutes`). `end_reason` gets a `(backed up)` suffix when the final snapshot landed first; a user terminate without one says `(no backup)`. `usage_events` unchanged (it is a billing ledger).
+
+### Manual terminate
+
+`POST /api/instances/:id/terminate` `{ force?: true }`. With a healthy agent and no `force`: starts a drain (`drain_reason user`), then the request polls every 3 s for up to 90 s (one Worker request, no CPU cost while waiting). Responses:
+
+```json
+{ "ok": true, "id": "…", "state": "terminated", "backup_before_kill": true, "billed_cents": 41, "waited_s": 48 }
+{ "ok": true, "id": "…", "state": "draining", "backup_before_kill": null, "waited_s": 90 }
+{ "ok": true, "id": "…", "state": "terminated", "backup_before_kill": false, "settled_cents": 3 }
+```
+
+The second means the final snapshot is not confirmed yet: the agent's `final-done` (or the cron deadline) will terminate the VM, show it as "Stopping, saving files…". No agent / stale agent / `force:true` terminate immediately with `backup_before_kill:false`. MCP `instances_terminate` uses the same path.
+
+### Member API
+
+- `GET /api/backups` ->
+
+```json
+{ "enabled": true, "used_bytes": 1500009, "quota_bytes": 5368709120, "est_monthly_cents": 0.0022, "price_cents_per_gb_month": 1.5,
+  "last_backup_at": "2026-10-17T12:10:25Z",
+  "snapshots": [{ "id": "…", "snapshot_id": "aaaa1111", "instance_id": "…", "instance_name": "rl_…", "tag": "task-end", "bytes_added": 1500009, "total_bytes": 3000000, "created_at": "…" }],
+  "machines": [{ "instance_id": "…", "name": "…", "status": "running", "backup_state": "ok", "last_heartbeat_at": "…", "last_backup_at": "…", "backup_requested": 0, "drain_started_at": null }],
+  "restore_command": "gpu-proxy restore" }
+```
+
+  `backup_state`: `none` (no agent / not enrolled yet; show "enrolling" for a few minutes after launch) | `ok` | `draining` / `final_requested` ("saving files before stop") | `done`. `est_monthly_cents` = used GB x 1.5 (R2 storage list price; the free tier is ignored). `snapshots` = latest 50.
+- `POST /api/instances/:id/backup` -> `{ ok, id, requested: true, heartbeat_seconds: 45 }`: the agent backs up at its next heartbeat. 409 `no_agent` when the VM has no agent.
+- `DELETE /api/backups` -> `{ ok, deleted_objects, freed_bytes }`: wipes the member's whole repository (confirm in the UI). Running agents re-init on their next backup.
+- Instance rows / detail gained `backup_state`, `last_heartbeat_at`, `last_backup_at`, `drain_started_at`. `POST /api/instances` accepts `backups: false` to opt out for that VM.
+
+### Admin API
+
+- `GET /api/admin/backups` -> `{ enabled, default_quota_bytes, price_cents_per_gb_month, total_used_bytes, total_est_monthly_cents, members: [{ user_id, email, used_bytes, quota_bytes, quota_override, est_monthly_cents, last_backup_at, snapshot_count }] }`
+- `GET|PATCH /api/admin/settings` now also carry `backups_enabled` (bool, off = no bootstrap command on new launches) and `backup_default_quota_bytes` (default 5 GiB).
+- `PATCH /api/admin/users/:id/backup-quota` `{ quota_bytes: number | null }` -> `{ user_id, quota_bytes, quota_override }` (`null` = lab default).
+
+### Testing
+
+`node scripts/backup-smoke.mjs` starts `wrangler dev --local` on :8799 with a throwaway state dir (`MOCK_MASSED=1`, fresh D1 + R2) and runs 60 checks: enrollment (single use, expiry), restic PUT/GET/HEAD/DELETE/list/Range, cross-user denial, 413/507, heartbeat, backup-now, the three drain paths, manual terminate, force, wipe. In mock mode the launch response carries `dev_enroll_token` and `POST /api/dev/backdate` (admin) ages an enrollment/heartbeat/drain. It does not run the shell agent or real restic.
+
+### Not tested / open
+
+- The agent script is syntax-checked only (`sh -n`); it has not run on a real VM, and not against real restic. Check on the first real VM: that Massed runs `command` as root (the script re-execs under sudo otherwise), that restic's `--json` summary `snapshot_id` is what we expect, and the `/home/<user>/work` restore path logic.
+- Massed's `instances_launch` `command` argument name and semantics are unverified (assumed `command`; aliases `startupCommand`, `command_startup`, `userData`, `script` are remapped by the schema check). If the schema has no such property, backups quietly stay off.
+- Enrollment token lifetime is 10 minutes from launch; a VM that boots slower never enrolls (state stays `none`, no backups, old kill at $0).
+- Final-backup latency is up to one heartbeat (45 s) plus the backup time; manual terminate waits 90 s before answering `draining`.
+- No retention beyond the agent's daily `forget --keep-last 30`; the wipe and quotas are the only other controls. No per-file Files view (the repo is restic-encrypted; browsing needs a restore).
+- A member cannot restore from their own laptop yet (no member-scoped credential); restore runs on a VM with `gpu-proxy restore`.
+

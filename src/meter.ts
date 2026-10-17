@@ -1,6 +1,6 @@
 import { audit } from "./db";
 import type { InstanceRow } from "./db";
-import { terminateRow } from "./instances";
+import { drainPass } from "./drain";
 import { meterInstance, recordVmEvent } from "./ledger";
 import { getAccountSnapshot, isMock } from "./massed";
 import { ensureSchema } from "./schema";
@@ -15,6 +15,7 @@ export type TickResult = {
   billed: number;
   killed: number;
   kill_failed: number;
+  drained: number;
   reconciled: number;
   stale_launches: number;
   upstream_ok: boolean;
@@ -26,7 +27,8 @@ export type TickResult = {
  *  1. read the live VM list once
  *  2. reconcile: rows whose VM is gone upstream stop metering (final settlement at the estimated end)
  *  3. meter what is still running (rounded once per VM, fractional cents carried)
- *  4. kill VMs of members at $0. A failed kill leaves the VM "running" and is retried next tick.
+ *  4. budget: low members' VMs with a backup agent drain (back up, then terminate, see drain.ts); VMs of members
+ *     at $0 without one are killed. A failed kill leaves the VM "running" and is retried next tick.
  *  5. feed the same live list to the Massed watcher
  * If the lab is not connected we still bill known VMs (they are still running upstream) but skip
  * reconcile and kills, since we cannot see or act on Massed.
@@ -74,36 +76,14 @@ export async function tickMeter(env: Env): Promise<TickResult> {
   }
 
   let billed = 0;
-  const owners = new Set<string>();
   for (const inst of running) {
     const cents = await meterInstance(env, inst, now);
     if (cents) billed += 1;
-    owners.add(inst.user_id);
   }
 
-  let killed = 0;
-  let killFailed = 0;
-  if (canAct && owners.size) {
-    const ids = [...owners];
-    const broke = await env.DB.prepare(
-      `SELECT id FROM users WHERE id IN (${ids.map(() => "?").join(",")}) AND role != 'admin' AND credit_cents <= 0`,
-    )
-      .bind(...ids)
-      .all<{ id: string }>();
-    const brokeIds = new Set((broke.results ?? []).map((r) => r.id));
-    for (const inst of running.filter((r) => brokeIds.has(r.user_id))) {
-      const fresh = await env.DB.prepare("SELECT * FROM instances WHERE id = ?").bind(inst.id).first<InstanceRow>();
-      if (!fresh || (fresh.status !== "running" && fresh.status !== "launching")) continue;
-      try {
-        await terminateRow(env, fresh, { userId: null, kind: "system" }, "budget_kill", "budget exhausted");
-        killed += 1;
-      } catch (err) {
-        killFailed += 1;
-        console.error(JSON.stringify({ message: "meter kill failed, will retry", id: inst.id, error: err instanceof Error ? err.message : String(err) }));
-      }
-    }
-    if (killed || killFailed) await audit(env.DB, null, "meter.kill", { killed, killFailed });
-  }
+  // Budget enforcement: VMs with a backup agent drain first (final snapshot, then terminate); the rest die at $0.
+  const { killed, failed: killFailed, drained } = await drainPass(env, running, now, canAct);
+  if (killed || killFailed || drained) await audit(env.DB, null, "meter.kill", { killed, killFailed, drained });
 
   let watch: TickResult["watch"] = null;
   try {
@@ -112,5 +92,5 @@ export async function tickMeter(env: Env): Promise<TickResult> {
     console.error(JSON.stringify({ message: "massed watch failed", error: String(err) }));
   }
 
-  return { billed, killed, kill_failed: killFailed, reconciled, stale_launches: staleLaunches, upstream_ok: upstreamOk, watch };
+  return { billed, killed, kill_failed: killFailed, drained, reconciled, stale_launches: staleLaunches, upstream_ok: upstreamOk, watch };
 }

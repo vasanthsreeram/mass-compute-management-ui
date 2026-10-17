@@ -13,6 +13,8 @@ import {
   restartInstances,
   terminateInstances,
 } from "./massed";
+import { bootstrapCommand, mintEnrollment, wantBackup } from "./backup";
+import { heartbeatFresh, startDrain } from "./drain";
 import { HttpError, assertCanLaunch } from "./policy";
 import { listSshKeys, parsePublicKey } from "./sshkeys";
 import type { InstanceRow } from "./db";
@@ -24,6 +26,8 @@ export type LaunchBody = {
   regionName?: string;
   /** One extra public key to inject, on top of the keys the member saved. */
   sshPublicKey?: string;
+  /** false = no backup agent on this VM (default: on whenever the lab has backups enabled). */
+  backups?: boolean;
 };
 
 function pickDefaultImage(images: { vm_image_id: number; vm_image_name: string }[]): number | undefined {
@@ -72,7 +76,7 @@ async function launchKeys(env: Env, userId: string, inline?: string) {
   return keys.slice(0, MAX_LAUNCH_KEYS);
 }
 
-export async function handleLaunch(env: Env, ctx: AuthContext, body: LaunchBody) {
+export async function handleLaunch(env: Env, ctx: AuthContext, body: LaunchBody, origin = env.APP_URL) {
   const actor = actorOf(ctx);
   const productName = body.productName?.trim();
   if (!productName) throw new HttpError(400, "productName required");
@@ -109,6 +113,11 @@ export async function handleLaunch(env: Env, ctx: AuthContext, body: LaunchBody)
     )
     .run();
 
+  // Backup bootstrap: a single-use 10 minute token in the startup command (command_startup is readable back,
+  // so never a long-lived key). The VM trades it for a credential at POST /api/agent/enroll.
+  let enrollToken: string | null = null;
+  if (await wantBackup(env, body.backups === false)) enrollToken = await mintEnrollment(env, ctx.user.id, id);
+
   let launched: { uuid: string; mock: boolean };
   try {
     launched = await launchInstance(env, {
@@ -117,9 +126,11 @@ export async function handleLaunch(env: Env, ctx: AuthContext, body: LaunchBody)
       instanceName,
       imageId,
       sshKeys: keys.length ? keys.map((k) => k.key) : undefined,
+      command: enrollToken ? bootstrapCommand(origin || env.APP_URL, enrollToken) : undefined,
     });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
+    await env.DB.prepare("DELETE FROM backup_enrollments WHERE instance_id = ?").bind(id).run();
     await env.DB.prepare("UPDATE instances SET status = 'failed', terminated_at = ?, end_reason = ? WHERE id = ?")
       .bind(new Date().toISOString(), `launch failed: ${msg.slice(0, 150)}`, id)
       .run();
@@ -168,7 +179,9 @@ export async function handleLaunch(env: Env, ctx: AuthContext, body: LaunchBody)
     actor: actor.kind, productName, rate: sku.priceCentsPerHour,
   });
   await audit(env.DB, ctx.user.id, "instance.launch", { id, productName, mc_uuid: launched.uuid, via: ctx.via });
-  return instanceDetail(env, ctx, id);
+  const detail = await instanceDetail(env, ctx, id);
+  // Mock launches never run the command, so tests get the token directly. Never returned for real launches.
+  return launched.mock && enrollToken ? { ...detail, dev_enroll_token: enrollToken } : detail;
 }
 
 async function loadOwned(env: Env, ctx: AuthContext, id: string): Promise<InstanceRow> {
@@ -199,6 +212,7 @@ export async function handleListInstances(env: Env, userId: string) {
   const rows = await env.DB.prepare(
     `SELECT id, mc_uuid, name, product_name, region_name, price_cents_per_hour, status, ip, username,
             launched_at, terminated_at, last_metered_at, billed_cents, end_reason, ssh_fingerprints,
+            backup_state, last_heartbeat_at, last_backup_at, drain_started_at,
             password_enc IS NOT NULL AS has_password
      FROM instances WHERE user_id = ? ORDER BY launched_at DESC`,
   )
@@ -245,6 +259,10 @@ export async function instanceDetail(env: Env, ctx: AuthContext, id: string) {
     last_metered_at: row.last_metered_at,
     billed_cents: row.billed_cents,
     end_reason: row.end_reason,
+    backup_state: row.backup_state,
+    last_heartbeat_at: row.last_heartbeat_at,
+    last_backup_at: row.last_backup_at,
+    drain_started_at: row.drain_started_at,
     ssh_fingerprints: fingerprints,
     // How to get in: ssh key when we injected one, password only when the lab uses an API key.
     access: {
@@ -288,6 +306,8 @@ export async function terminateRow(
   actor: Actor,
   kind: "terminate" | "budget_kill",
   reason: string,
+  /** Merged into the vm_events detail, e.g. { backup_before_kill, snapshot_id, waited_s }. */
+  extra: Record<string, unknown> = {},
 ): Promise<{ settled_cents: number }> {
   if (row.status === "terminated" || row.status === "failed") return { settled_cents: 0 };
   const meta = {
@@ -311,14 +331,39 @@ export async function terminateRow(
     }
   }
   const cents = await meterInstance(env, row, Date.now(), { reason });
-  await recordVmEvent(env, { ...meta, kind, detail: { owner: row.user_id, settled_cents: cents ?? 0, reason } });
+  // The VM is gone: its backup credential must stop working (vmAuth also requires a live instance).
+  await env.DB.prepare("UPDATE vm_credentials SET revoked_at = ? WHERE instance_id = ? AND revoked_at IS NULL").bind(new Date().toISOString(), row.id).run();
+  await recordVmEvent(env, { ...meta, kind, detail: { owner: row.user_id, settled_cents: cents ?? 0, reason, backup_before_kill: false, ...extra } });
   return { settled_cents: cents ?? 0 };
 }
 
-export async function handleTerminate(env: Env, ctx: AuthContext, id: string) {
-  const row = await loadOwned(env, ctx, id);
+const TERMINATE_WAIT_MS = 90_000;
+
+/**
+ * Back up, then terminate. A VM with a healthy backup agent is put into `draining` (final_backup:true on its
+ * next heartbeat, within ~45 s) and this request polls up to 90 s for the agent's final-done, which terminates
+ * the VM. If the snapshot is not confirmed in time it returns { state: "draining" } and the agent (or the cron's
+ * 10 minute deadline) finishes the job, so the request never has to outlive the Worker. `force` skips all of it.
+ */
+export async function handleTerminate(env: Env, ctx: AuthContext, id: string, opts: { force?: boolean } = {}) {
+  let row = await loadOwned(env, ctx, id);
   if (row.status === "terminated") return { ok: true, id };
-  const { settled_cents } = await terminateRow(env, row, actorOf(ctx), "terminate", "terminated by user");
-  await audit(env.DB, ctx.user.id, "instance.terminate", { id, owner: row.user_id, via: ctx.via });
-  return { ok: true, id, settled_cents };
+  const hasAgent = row.backup_state !== "none" && heartbeatFresh(row, Date.now());
+  if (opts.force || !hasAgent) {
+    const why = opts.force ? "forced" : row.backup_state === "none" ? "no backup agent" : "agent not responding";
+    const { settled_cents } = await terminateRow(env, row, actorOf(ctx), "terminate", "terminated by user", { backup_before_kill: false, why });
+    await audit(env.DB, ctx.user.id, "instance.terminate", { id, owner: row.user_id, via: ctx.via, backup_before_kill: false });
+    return { ok: true, id, settled_cents, backup_before_kill: false, state: "terminated" };
+  }
+  if (row.backup_state === "ok") await startDrain(env, row, "user", { by: ctx.user.id });
+  await audit(env.DB, ctx.user.id, "instance.terminate", { id, owner: row.user_id, via: ctx.via, draining: true });
+  const t0 = Date.now();
+  while (Date.now() - t0 < TERMINATE_WAIT_MS) {
+    await new Promise((r) => setTimeout(r, 3000));
+    row = (await env.DB.prepare("SELECT * FROM instances WHERE id = ?").bind(id).first<InstanceRow>()) ?? row;
+    if (row.status === "terminated") {
+      return { ok: true, id, billed_cents: row.billed_cents, backup_before_kill: row.end_reason?.includes("(backed up)") ?? false, state: "terminated", waited_s: Math.round((Date.now() - t0) / 1000) };
+    }
+  }
+  return { ok: true, id, state: "draining", backup_before_kill: null, waited_s: Math.round((Date.now() - t0) / 1000) };
 }

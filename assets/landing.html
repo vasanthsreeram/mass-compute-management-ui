@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#f6f1ea">
   <title>Massed Compute desk — team budgets and spend history</title>
-  <meta name="description" content="Self-hosted team desk for one Massed Compute account. Budgets, GPU allowlists, and a spend history the API does not return.">
+  <meta name="description" content="Run it on your own Cloudflare account. You deploy the desk for your Massed Compute account; your members join with just their email. Budgets, GPU allowlists, spend history and R2 workspace backups.">
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
   <link rel="preload" href="fonts/inter-latin.woff2" as="font" type="font/woff2" crossorigin>
   <link rel="stylesheet" href="landing.css">
@@ -73,10 +73,11 @@
             Cloudflare Workers
           </li>
         </ul>
-        <h1>A team desk for one Massed Compute account.</h1>
-        <p class="lead">Invite people and coding agents. They rent GPUs on the lab’s account, inside a budget, a GPU list, and a machine cap.</p>
+        <h1>Run it on your own Cloudflare account.</h1>
+        <p class="lead">You, the Massed Compute account holder, deploy it. Your members join with just their email and rent GPUs on your account, inside a budget, a GPU list, and a machine cap.</p>
         <div class="cta">
-          <a class="primary" href="/app">Open the app</a>
+          <a class="primary" href="https://deploy.workers.cloudflare.com/?url=https://github.com/vasanthsreeram/mass-compute-management-ui">Deploy to Cloudflare</a>
+          <a class="ghost" href="/app">Open the app</a>
           <a class="ghost" href="https://github.com/vasanthsreeram/mass-compute-management-ui">View on GitHub</a>
         </div>
       </div>
@@ -127,22 +128,27 @@
     <section id="how">
       <div class="wrap">
         <p class="sect">How it works</p>
-        <h2 class="block">Connect once. Hand out budgets.</h2>
-        <ol class="steps">
+        <h2 class="block">Deploy once. Hand out budgets.</h2>
+        <ol class="steps four">
           <li>
             <span class="n">1</span>
-            <h3>Connect</h3>
-            <p>Admin approves on Massed’s page. The password stays there. Revoke it under Settings → Connected Apps.</p>
+            <h3>Deploy</h3>
+            <p>Sign in with Cloudflare and the button sets up the Worker, database and backup bucket in your account. You become the admin.</p>
           </li>
           <li>
             <span class="n">2</span>
-            <h3>Invite</h3>
-            <p>Email a budget, a GPU list, and a machine cap. They sign up here. No Massed account.</p>
+            <h3>Connect Massed</h3>
+            <p>Approve on Massed’s own page. Your password stays there. Revoke it under Settings → Connected Apps.</p>
           </li>
           <li>
             <span class="n">3</span>
-            <h3>Stop at $0</h3>
-            <p>That person’s VMs terminate. Admins are not stopped. Massed still bills the lab.</p>
+            <h3>Invite</h3>
+            <p>Email a budget, a GPU list, and a machine cap. Members join with just their email. No Massed account.</p>
+          </li>
+          <li>
+            <span class="n">4</span>
+            <h3>Members launch GPUs</h3>
+            <p>At $0 that person’s VMs stop, after a final backup of their workspace. Admins are not stopped. Massed still bills you.</p>
           </li>
         </ol>
       </div>
@@ -158,6 +164,7 @@
           <li><b>Unattributed</b> if it was started on Massed, outside this desk.</li>
           <li><b>Agents</b> — Claude Code, Codex, Cursor. Approve <code>gpu-proxy login</code>. 30-day token. Same caps.</li>
           <li><b>Match</b> a job to the cheapest live GPU on that person’s allowlist.</li>
+          <li><b>Backups</b> of each workspace to your R2 bucket, with restore onto a new VM. A budget-safe final backup runs before a $0 stop.</li>
         </ul>
       </div>
     </section>
@@ -178,9 +185,9 @@
     <section id="host">
       <div class="wrap host">
         <div>
-          <p class="sect">Self-host</p>
-          <h2 class="block">Deploy your own Worker.</h2>
-          <p class="sub"><code>MOCK_MASSED=1</code> locally. <code>"0"</code> in production. Don’t commit <code>.dev.vars</code> or the Massed key.</p>
+          <p class="sect">Run it yourself</p>
+          <h2 class="block">Your Cloudflare account, your data.</h2>
+          <p class="sub">The Deploy button or <code>npm run setup</code> logs in with Cloudflare OAuth and provisions D1 and R2. Admin sign-in and member invites are the desk’s own. <code>MOCK_MASSED=1</code> locally. <code>"0"</code> in production. Don’t commit <code>.dev.vars</code> or the Massed key.</p>
         </div>
         <div class="terms">
           <div class="term">
@@ -198,17 +205,15 @@ npm run dev</pre>
           </div>
           <div class="term">
             <div class="term-head">
-              <h2>On Cloudflare</h2>
+              <h2>On your Cloudflare account</h2>
               <button type="button" class="copy" data-copy="cloud-steps">Copy</button>
             </div>
-            <pre id="cloud-steps">npx wrangler secret put SESSION_SECRET
-npx wrangler secret put DATA_KEY
-<span class="dim"># set APP_URL in wrangler.jsonc</span>
-<span class="dim"># optional: single-operator fallback</span>
-npx wrangler secret put MASSED_COMPUTE_API_KEY
-npx wrangler d1 migrations apply gpu-proxy --remote
-npm run deploy
-<span class="dim"># Open /app, sign up (first account is admin), Connect Massed Compute</span></pre>
+            <pre id="cloud-steps"><span class="dim"># opens the Cloudflare login in your browser</span>
+npm install
+npm run setup -- --dry-run
+npm run setup
+<span class="dim"># prints your URL and a one-time admin claim,</span>
+<span class="dim"># then: Connect Massed Compute, invite members</span></pre>
           </div>
         </div>
       </div>

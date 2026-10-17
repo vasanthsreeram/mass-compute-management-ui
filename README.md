@@ -1,6 +1,10 @@
 # Massed Compute Management UI
 
-A Cloudflare Worker in front of **one lab Massed Compute account**. An admin connects it with "Login with Massed Compute" (OAuth 2.1 + PKCE). Teammates sign up by invite, with no Massed account, and launch GPUs on the lab account through the desk, inside the budget, GPU allowlist and concurrency cap you give them. Agents use per-user API keys (`gpk_…`). Nobody but the admin's grant ever touches Massed credentials.
+A Cloudflare Worker in front of **one lab Massed Compute account**, **run by you on your own Cloudflare account**. You (the Massed Compute account holder) deploy it and attach Massed with "Login with Massed Compute" (OAuth 2.1 + PKCE). Your members join with just their email, with no Massed account, and launch GPUs on your account through the desk, inside the budget, GPU allowlist and concurrency cap you give them. Agents use per-user API keys (`gpk_…`). Nobody but your grant ever touches Massed credentials.
+
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/vasanthsreeram/mass-compute-management-ui)
+
+**Flow:** Deploy (Cloudflare button or `npm run setup`) -> Connect Massed -> Invite members -> Members launch GPUs. Workspaces can be backed up to and restored from your own R2 bucket, including a final backup before a member's budget runs out. Step-by-step: [docs/admin-setup.md](docs/admin-setup.md). The Cloudflare login (button / `wrangler login`) is Cloudflare OAuth; the desk's own admin sign-in and member invites are app-level, and the guide says exactly where the line is.
 
 **Massed Compute signup (referral):** [https://vm.massedcompute.com/signup?referral=a6Cjx5Rdeg](https://vm.massedcompute.com/signup?referral=a6Cjx5Rdeg)
 
@@ -91,7 +95,7 @@ npx wrangler secret put DATA_KEY
 
 Optional single-operator fallback: `npx wrangler secret put MASSED_COMPUTE_API_KEY` (REST; the only way to read VM passwords). Set `APP_URL` in `wrangler.jsonc` to your public URL (used in emails). `MOCK_MASSED` must stay `"0"`; it is a dev-only flag.
 
-Self-hosting: deploy the Worker, apply the migrations, choose **I run the lab**, sign in with the first admin's email (the first user, or `ADMIN_EMAIL`, becomes admin), then attach Massed Compute when prompted.
+Self-hosting: use the Deploy button above, or `npm run setup` (`-- --dry-run` to preview). It logs you into Cloudflare, creates D1 + R2, deploys, sets secrets and prints a one-time admin claim. See [docs/admin-setup.md](docs/admin-setup.md). Manual route: deploy the Worker, apply the migrations, choose **I run the lab**, sign in as `ADMIN_EMAIL`, then attach Massed Compute.
 
 ## Metering
 

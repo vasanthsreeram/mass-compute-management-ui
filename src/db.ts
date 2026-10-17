@@ -11,6 +11,9 @@ export type UserRow = {
   allowed_gpus: string;
   max_concurrent: number;
   created_at: string;
+  /** Credit at the last grant/top-up; the backup drain starts at 10% of it. Optional: only SELECT * rows carry it. */
+  budget_cents?: number;
+  backup_quota_bytes?: number | null;
 };
 
 export type PublicUser = {
@@ -45,6 +48,12 @@ export type InstanceRow = {
   carry_cents: number;
   billed_cents: number;
   end_reason: string | null;
+  backup_state: string;
+  last_heartbeat_at: string | null;
+  last_backup_at: string | null;
+  drain_started_at: string | null;
+  drain_reason: string | null;
+  backup_requested: number;
 };
 
 export function publicUser(row: UserRow): PublicUser {
@@ -82,8 +91,8 @@ export async function userCount(db: D1Database): Promise<number> {
 export async function insertUser(db: D1Database, user: UserRow): Promise<void> {
   await db
     .prepare(
-      `INSERT INTO users (id, email, password_hash, salt, role, credit_cents, spent_cents, allowed_gpus, max_concurrent, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO users (id, email, password_hash, salt, role, credit_cents, spent_cents, allowed_gpus, max_concurrent, created_at, budget_cents)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .bind(
       user.id,
@@ -96,6 +105,7 @@ export async function insertUser(db: D1Database, user: UserRow): Promise<void> {
       user.allowed_gpus,
       user.max_concurrent,
       user.created_at,
+      user.credit_cents,
     )
     .run();
 }

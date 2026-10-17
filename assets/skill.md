@@ -43,11 +43,46 @@ MCP (same key): `POST $GPU_PROXY_URL/mcp` JSON-RPC `tools/list` / `tools/call`.
 4. Poll `GET /api/instances/:id` until `ip` is set. Give `access.ssh_command`. VMs are reached with the saved SSH key; there is no password.
 5. When the job is done, confirm, then terminate.
 
+## Backups
+
+VMs launched here come with a backup agent: `~/work` is restored from the member's latest snapshot at start, backed up every 5 minutes, and backed up one last time before the VM is terminated. Keep outputs, checkpoints and code under `~/work`; anything else dies with the VM.
+
+| Action | Call |
+|--------|------|
+| Backup state, usage, snapshots | `GET /api/backups` |
+| Back up a VM now | `POST /api/instances/:id/backup` (or `gpu-proxy save --tag task-end` on the VM) |
+| Restore on a VM | `gpu-proxy restore` |
+| Terminate without the final backup | `POST /api/instances/:id/terminate` `{"force":true}` |
+
+Terminate waits up to 90 s for the final backup and answers `{"state":"draining"}` if it is still running; the VM is then terminated as soon as the snapshot lands.
+
+### Save at the end of every task
+
+Add a stop hook so work is saved when the agent finishes, not only every 5 minutes. Run these on the VM (they do nothing if the agent is absent; hook formats change, so check the tool's hooks docs if one does not fire).
+
+Claude Code, `~/.claude/settings.json`:
+
+```json
+{ "hooks": { "Stop": [ { "hooks": [ { "type": "command", "command": "gpu-proxy save --tag task-end || true" } ] } ] } }
+```
+
+Codex, `~/.codex/config.toml` (notify runs when a turn completes):
+
+```toml
+notify = ["sh", "-c", "gpu-proxy save --tag task-end || true"]
+```
+
+Cursor, `~/.cursor/hooks.json`:
+
+```json
+{ "version": 1, "hooks": { "stop": [ { "command": "gpu-proxy save --tag task-end || true" } ] } }
+```
+
 ## Hard rules
 
 - Never call `vm.massedcompute.com`. The proxy is the only API.
 - 402 / 403 are policy, not retries. 409 means the lab's Massed connection is down: tell the user an admin must reconnect it.
-- Confirm terminate. There is no pause/snapshot. Terminate wipes the disk.
+- Confirm terminate. There is no pause/snapshot: terminate wipes the disk. `~/work` is backed up first unless `force:true`.
 - Do not store or echo other tenants' machines.
 - Min billable unit upstream is 1 hour.
 - Never print the Massed account key. You do not have it.

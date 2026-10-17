@@ -583,6 +583,7 @@ h2.block {
   list-style: none;
   counter-reset: step;
 }
+.steps.four { grid-template-columns: repeat(4, minmax(0, 1fr)); }
 .steps li {
   background: var(--panel);
   border: 1px solid var(--line);
@@ -818,7 +819,7 @@ code {
 }
 
 @media (max-width: 900px) {
-  .hero, .steps, .split, .grid, .host, .facts { grid-template-columns: 1fr; }
+  .hero, .steps, .steps.four, .split, .grid, .host, .facts { grid-template-columns: 1fr; }
   .facts li:last-child { grid-column: auto; }
   .hero { padding-top: 28px; gap: 28px; }
   .brand .full { display: none; }

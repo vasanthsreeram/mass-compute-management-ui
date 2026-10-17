@@ -18,3 +18,4 @@ secrets.json
 *.pem
 *.key
 !skill/**/*.md
+wrangler.local.jsonc

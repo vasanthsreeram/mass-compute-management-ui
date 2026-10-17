@@ -74,3 +74,14 @@ export async function decryptSecret(packed: string, secret: string): Promise<str
   );
   return new TextDecoder().decode(pt);
 }
+
+/** HKDF-SHA256(secret, salt, info) -> 32 bytes, base64url. Deterministic, so the Worker can re-derive it any time. */
+export async function deriveSecret(secret: string, salt: string, info: string): Promise<string> {
+  const base = await crypto.subtle.importKey("raw", encoder.encode(secret), "HKDF", false, ["deriveBits"]);
+  const bits = await crypto.subtle.deriveBits(
+    { name: "HKDF", hash: "SHA-256", salt: encoder.encode(salt), info: encoder.encode(info) },
+    base,
+    256,
+  );
+  return bytesToB64url(new Uint8Array(bits));
+}

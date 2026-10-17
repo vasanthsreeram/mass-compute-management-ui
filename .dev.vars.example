@@ -1,6 +1,6 @@
-# Copy to .dev.vars (never commit).
-MASSED_COMPUTE_API_KEY=
+# Copy to .dev.vars (never commit). Local dev uses MOCK_MASSED=1.
 SESSION_SECRET=change-me-to-a-long-random-string
 DATA_KEY=change-me-to-another-long-random-string
 ADMIN_EMAIL=you@example.com
+MASSED_COMPUTE_API_KEY=
 MOCK_MASSED=1

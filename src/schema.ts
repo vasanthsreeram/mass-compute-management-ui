@@ -9,7 +9,8 @@ import { listMcpTools } from "./massed_oauth";
  * mismatch; if tools/list itself is unreachable the result is "unknown" and we do not block.
  */
 
-type ArgSpec = { name: string; array?: boolean; aliases?: string[] };
+/** `optional`: a missing property does not block launches, the caller just leaves the argument out. */
+type ArgSpec = { name: string; array?: boolean; aliases?: string[]; optional?: boolean };
 
 const UUIDS: ArgSpec = { name: "instanceUuids", array: true, aliases: ["instanceUuid", "uuids", "uuid", "instanceIds", "instance_uuids"] };
 export const EXPECTED: Record<string, ArgSpec[]> = {
@@ -19,6 +20,8 @@ export const EXPECTED: Record<string, ArgSpec[]> = {
     { name: "instanceName", aliases: ["name"] },
     { name: "imageId", aliases: ["image", "vmImageId"] },
     { name: "sshKeys", array: true, aliases: ["sshPublicKeys", "publicKeys", "ssh_public_keys"] },
+    // Startup script (backup agent bootstrap). Optional: without it the VM simply runs without backups.
+    { name: "command", aliases: ["startupCommand", "startup_command", "commandStartup", "command_startup", "userData", "script"], optional: true },
   ],
   instances_terminate: [UUIDS],
   instances_restart: [UUIDS],
@@ -68,7 +71,7 @@ export function evaluateSchema(tools: ToolDef[]): { ok: boolean; problems: strin
         names.find((n) => norm(n) === norm(spec.name)) ??
         names.find((n) => (spec.aliases ?? []).some((a) => norm(a) === norm(n)));
       if (!hit) {
-        check.missing.push(spec.name);
+        if (!spec.optional) check.missing.push(spec.name);
         continue;
       }
       check.mapping[spec.name] = hit;
@@ -139,4 +142,12 @@ export async function mapToolArgs(env: Env, tool: string, args: Record<string, u
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(args)) out[mapping[k] ?? k] = v;
   return out;
+}
+
+/** True when Massed's launch tool accepts a startup `command` (or we cannot tell: unknown is not a block). */
+export async function launchAcceptsCommand(env: Env): Promise<boolean> {
+  const s = await storedSchema(env);
+  const tool = s?.tools?.instances_launch;
+  if (!s || s.ok === null || !tool) return true;
+  return !!tool.mapping.command;
 }
