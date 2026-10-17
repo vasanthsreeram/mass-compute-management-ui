@@ -16,7 +16,7 @@ Source of truth for every API change. The UI session builds against this file. A
 - UI requests round: requests 1 and 2 done, request 3 left as a product decision ([Backend answers to UI requests](#backend-answers-to-ui-requests)). End-to-end test with the real UI against the fake Massed: passed ([End-to-end test](#end-to-end-test-fake-massed-real-ui)).
 - Not done / not tested against real Massed: see [Open risks](#open-risks).
 
-- R2 backup loop (issue #1): backend done, see [R2 backups](#r2-backups). UI not started.
+- R2 backup loop (issue #1): backend done, see [R2 backups](#r2-backups). Files view (snapshots, per-machine state, admin storage table) is in the app.
 
 Migrations to apply before deploy: `0008_r2_backups.sql` (and create the bucket: `wrangler r2 bucket create gpu-proxy-backups`), plus `0005_lab_tracking.sql`, `0006_oauth_return.sql` (already live), `0007_admin_email_login.sql` (`npm run db:local`, `wrangler d1 migrations apply gpu-proxy --remote`).
 
