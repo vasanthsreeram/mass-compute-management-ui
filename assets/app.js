@@ -118,6 +118,10 @@ const state = {
   billing: null,
   connEvents: null,
   settings: null,
+  backups: null,
+  adminBackups: null,
+  quotaEdit: null,
+  wipeAsk: false,
   onboard: null,
   onboardAuto: [],
   onboardSeenRemote: false,
@@ -233,6 +237,7 @@ function ensureShell() {
           ${tabBtn("home", "Home")}
           ${tabBtn("team", "Team")}
           ${tabBtn("usage", "Usage")}
+          ${tabBtn("files", "Files")}
           ${isAdmin() ? tabBtn("fleet", "Fleet") : ""}
           ${tabBtn("agents", "Agents")}
           <button class="ghost icon-btn" id="help" title="How this desk works" aria-label="How this desk works">${ICONS.help}</button>
@@ -360,6 +365,7 @@ function view() {
   if (state.tab === "usage") return usageView();
   if (state.tab === "fleet") return fleetView();
   if (state.tab === "agents") return agentsView();
+  if (state.tab === "files") return filesView();
   return "";
 }
 
@@ -1016,9 +1022,11 @@ function vmCard(i, mine) {
             : access?.method === "password"
               ? "Password access — the lab still holds a Massed API key."
               : sshCmd ? "Address only — no key is recorded for this machine." : "No way in yet."}</div></div>` : `<span class="s">Loading…</span>`}</div>` : ""}` : ""}
+      ${live && mine ? vmBackupLine(i) : ""}
       ${live && (mine || isAdmin()) ? `<div class="vm-actions">
           ${mine ? `<button class="ghost slim" data-restart="${i.id}">Restart</button>` : ""}
-          <button class="ghost slim danger" data-kill="${i.id}">Terminate</button></div>` : ""}
+          ${mine && backupInfo(i).state === "ok" ? `<button class="ghost slim" data-backup-now="${i.id}">Back up now</button>` : ""}
+          <button class="ghost slim danger" data-kill="${i.id}" ${backupInfo(i).saving ? "disabled" : ""}>${backupInfo(i).saving ? "Saving files…" : backupInfo(i).state === "ok" ? "Save &amp; terminate" : "Terminate"}</button></div>` : ""}
       ${!live ? `<div class="s">Ended ${esc(fmtShort(i.terminated_at))}${billed != null ? ` · billed ${money(billed)}` : ""}${i.end_reason ? ` · ${esc(i.end_reason)}` : ""}</div>` : ""}
     </div>`;
 }
@@ -1318,6 +1326,7 @@ function teamView() {
       <p class="hint" style="margin-top:14px">What each person spends is admin-only on this lab.
         Your own budget is at the top of this page.</p>`}
     ${isAdmin() ? shareSpendCard() : ""}
+    ${isAdmin() ? adminBackupsCard() : ""}
     ${editDialogHtml()}
   `;
 }
@@ -1754,6 +1763,195 @@ function yourMachines() {
     ${list.length > 4 && !state.showAllMachines
       ? `<button class="linkish" id="machines-more" style="margin-top:10px">Show all ${list.length} machines (${live} running)</button>`
       : ""}`;
+}
+
+
+// ---------------------------------------------------------------- backups (R2)
+
+const GIB = 1024 ** 3;
+function fmtBytes(n) {
+  n = Number(n) || 0;
+  if (n < 1024) return `${n} B`;
+  const u = ["KB", "MB", "GB", "TB"];
+  let i = -1;
+  do { n /= 1024; i++; } while (n >= 1024 && i < u.length - 1);
+  return `${n >= 100 ? n.toFixed(0) : n >= 10 ? n.toFixed(1) : n.toFixed(2)} ${u[i]}`;
+}
+// est_monthly_cents is in cents and can be a fraction of one; never show a real cost as $0.00
+const monthly = (cents) => {
+  const c = Number(cents) || 0;
+  return c > 0 && c < 0.5 ? "<$0.01" : `$${(c / 100).toFixed(2)}`;
+};
+const ago = (ts) => {
+  if (!ts) return "never";
+  const s = Math.max(0, (Date.now() - new Date(ts).getTime()) / 1000);
+  if (Number.isNaN(s)) return "never";
+  if (s < 90) return "just now";
+  if (s < 5400) return `${Math.round(s / 60)} min ago`;
+  if (s < 129600) return `${Math.round(s / 3600)} h ago`;
+  return `${Math.round(s / 86400)} d ago`;
+};
+
+/** One machine's backup state, with "stale" worked out from the heartbeat (the agent beats every 45 s). */
+function backupInfo(i) {
+  const raw = i.backup_state || "none";
+  const hb = i.last_heartbeat_at ? Date.now() - new Date(i.last_heartbeat_at).getTime() : Infinity;
+  const saving = raw === "draining" || raw === "final_requested";
+  const launching = i.launched_at && Date.now() - new Date(i.launched_at).getTime() < 10 * 60000;
+  const st = saving ? "draining" : raw === "ok" && hb > 3 * 60000 ? "stale" : raw === "done" ? "done" : raw === "ok" ? "ok" : "none";
+  const label = { ok: "Backing up", draining: "Saving files…", stale: "Agent silent", done: "Saved", none: launching ? "Enrolling…" : "No backups" }[st];
+  const tone = { ok: "run", draining: "warn", stale: "bad", done: "off", none: "off" }[st];
+  return { state: st, saving, label, tone, hb: i.last_heartbeat_at };
+}
+
+function vmBackupLine(i) {
+  const b = backupInfo(i);
+  const msg = b.saving
+    ? "Saving your files before this machine stops. This can take a minute or two."
+    : b.state === "ok" ? `last backup ${ago(i.last_backup_at)}`
+    : b.state === "stale" ? `no heartbeat since ${ago(b.hb)}; terminating will not wait for a backup`
+    : b.state === "none" ? "files on this machine are not backed up" : "";
+  return `<div class="bk-line"><span class="pill ${b.tone}">${esc(b.label)}</span><span class="s">${esc(msg)}</span></div>`;
+}
+
+async function loadBackups() {
+  try {
+    state.backups = await api("/api/backups");
+  } catch (e) {
+    if (e.message === "Unauthorized") throw e;
+    state.backups = state.backups || { enabled: false, error: e.message };
+  }
+}
+
+async function loadAdminBackups() {
+  if (!isAdmin()) return;
+  const r = await tryApi("/api/admin/backups");
+  if (r) state.adminBackups = r;
+}
+
+function filesView() {
+  const b = state.backups;
+  if (!b) return `<h1>Files</h1><p class="lead">Loading…</p>`;
+  if (b.enabled === false) {
+    return `<h1>Files</h1>
+      <p class="lead">Automatic backups of each machine's <code>~/work</code> folder, kept after the machine is gone.</p>
+      <div class="card empty"><b>Backups are off.</b>
+        <p class="lead">${b.error ? esc(b.error) : "An admin has turned backups off for this lab, or the storage bucket is not set up. New machines will not save their files."}</p></div>`;
+  }
+  const quota = Number(b.quota_bytes) || 0;
+  const used = Number(b.used_bytes) || 0;
+  const frac = quota > 0 ? Math.min(1, used / quota) : 0;
+  const t = tone(frac > 0.9 ? "brick" : frac > 0.7 ? "gold" : "olive");
+  const machines = b.machines || [];
+  const snaps = b.snapshots || [];
+  const runningOk = machines.some((m) => m.status === "running" && backupInfo(m).state === "ok");
+  const restore = b.restore_command || "gpu-proxy restore";
+  return `
+    <h1>Files</h1>
+    <p class="lead">Each machine's <code>~/work</code> folder is backed up every 5 minutes and before it stops, so your files survive terminating a machine.</p>
+    <div class="card budget-panel" style="--tone:${t.line}">
+      ${ring(frac, `${Math.round(frac * 100)}%`, "used")}
+      <div class="grow">
+        <div class="k">Backup storage</div>
+        <div class="v">${fmtBytes(used)}<small> of ${fmtBytes(quota)}</small></div>
+        <div class="budget-rows">
+          <div><span class="k">Est. cost</span><b class="mono">${monthly(b.est_monthly_cents)}/month</b></div>
+          <div><span class="k">Last snapshot</span><b class="mono">${esc(b.last_backup_at ? ago(b.last_backup_at) : "none yet")}</b></div>
+          <div><span class="k">Snapshots</span><b class="mono">${snaps.length}</b></div>
+        </div>
+      </div>
+      <div class="cap">
+        <div class="k">Quota</div>
+        <div class="track"><div class="fill" style="width:${(frac * 100).toFixed(0)}%"></div></div>
+        <div class="s">${fmtBytes(Math.max(0, quota - used))} free · $${(Number(b.price_cents_per_gb_month || 1.5) / 100).toFixed(3)}/GB-month</div>
+      </div>
+      ${frac >= 0.9 ? `<p class="notice warn">${ICONS.alert}Nearly full. Backups are refused once the quota is reached; delete files in <code>~/work</code> or ask an admin for more.</p>` : ""}
+    </div>
+
+    <h2 class="sect">Machines</h2>
+    ${machines.length ? `<div class="card"><div class="scroll"><table><thead><tr><th>Machine</th><th>Machine status</th><th>Backup</th><th>Last heartbeat</th><th>Last backup</th><th></th></tr></thead><tbody>
+      ${machines.map((m) => { const bi = backupInfo(m); return `<tr>
+        <td class="mono">${esc((m.name || "").replace(/^rl_[0-9a-f]{8}_/, ""))}</td>
+        <td><span class="pill ${m.status === "running" ? "run" : "off"}">${esc(m.status)}</span></td>
+        <td><span class="pill ${bi.tone}">${esc(bi.label)}</span></td>
+        <td class="mono">${m.status === "running" ? esc(ago(m.last_heartbeat_at)) : "—"}</td>
+        <td class="mono">${esc(ago(m.last_backup_at))}</td>
+        <td>${m.status === "running" && bi.state === "ok" ? `<button class="ghost slim" data-backup-now="${esc(m.instance_id || m.id)}">Back up now</button>` : ""}</td></tr>`; }).join("")}
+    </tbody></table></div>
+    <p class="hint">"Back up now" is picked up at the machine's next heartbeat (within about 45 seconds). Terminating a machine with a healthy agent saves a final snapshot first.</p></div>`
+    : `<div class="card empty"><b>No machines yet.</b><p class="lead">Launch a GPU from Home; its files are backed up automatically.</p></div>`}
+
+    <h2 class="sect">Snapshots</h2>
+    <div class="card">
+      ${snaps.length ? `<div class="scroll"><table><thead><tr><th>Snapshot</th><th>Machine</th><th>Tag</th><th>New data</th><th>Total</th><th>When</th></tr></thead><tbody>
+        ${snaps.map((x) => `<tr><td class="mono">${esc(String(x.snapshot_id || "").slice(0, 8))}</td>
+          <td class="mono">${esc((x.instance_name || "—").replace(/^rl_[0-9a-f]{8}_/, ""))}</td>
+          <td><span class="pill ${x.tag === "task-end" || x.tag === "final" ? "run" : "off"}">${esc(x.tag || "periodic")}</span></td>
+          <td class="mono">${fmtBytes(x.bytes_added)}</td><td class="mono">${x.total_bytes != null ? fmtBytes(x.total_bytes) : "—"}</td>
+          <td class="mono" title="${esc(fmt(x.created_at))}">${esc(fmtShort(x.created_at))}</td></tr>`).join("")}
+      </tbody></table></div>` : `<p class="lead">No snapshots yet. The first one lands a few minutes after a machine finishes enrolling.</p>`}
+    </div>
+
+    <h2 class="sect">Restore</h2>
+    <div class="card">
+      <p class="hint" style="margin-top:0">Restore runs on a machine, not in the browser (backups are encrypted). Start or open a machine, then run:</p>
+      <div class="conn"><code>${esc(restore)}</code><button class="ghost slim" data-copy="${esc(restore)}">Copy</button></div>
+      <ol class="steps-list">
+        <li>${runningOk ? "SSH into a running machine (copy its command from Home)." : "Launch a machine from Home and SSH into it. Wait for it to show as backing up."}</li>
+        <li>Run the command above. It pulls your latest snapshot into <code>~/work</code>.</li>
+        <li>New machines restore your latest snapshot automatically when they start.</li>
+      </ol>
+    </div>
+
+    <div class="card danger-zone">
+      <div class="card-head"><h2>Delete all my backups</h2></div>
+      <p class="hint">Permanently deletes every snapshot of yours (${fmtBytes(used)}). Files currently on running machines are untouched and will be backed up again from scratch.</p>
+      ${state.wipeAsk
+        ? `<div class="row tight"><button class="ghost slim danger" id="wipe-go">Yes, delete everything</button><button class="ghost slim" id="wipe-cancel">Cancel</button></div>`
+        : `<button class="ghost slim danger" id="wipe-ask" ${used > 0 || snaps.length ? "" : "disabled"}>Delete all my backups</button>`}
+    </div>`;
+}
+
+/** Admin: lab-wide storage, per-member quota editor, default quota and the on/off switch. */
+function adminBackupsCard() {
+  const a = state.adminBackups;
+  if (!a) return "";
+  const members = a.members || [];
+  const defGb = (Number(a.default_quota_bytes) || 0) / GIB;
+  const gb = (n) => +(n / GIB).toFixed(2);
+  return `
+    <div class="card" style="margin-top:18px">
+      <div class="card-head"><h2>Backups &amp; storage</h2>
+        <span class="pill ${a.enabled ? "run" : "off"}">${a.enabled ? "On" : "Off"}</span></div>
+      <label class="check switch">
+        <input type="checkbox" id="bk-enabled" ${a.enabled ? "checked" : ""} />
+        Back up new machines to R2
+      </label>
+      <p class="hint">${a.enabled ? "New machines get a backup agent at launch." : "Off: new machines launch without the agent. Existing backups are kept."}
+        Lab total ${fmtBytes(a.total_used_bytes)} · about ${monthly(a.total_est_monthly_cents)}/month.</p>
+      <form id="bk-default" class="row tight" style="margin:10px 0 14px">
+        <label style="margin:0;flex:none">Default quota (GB)</label>
+        <input name="gb" type="number" min="0" step="0.5" value="${gb(a.default_quota_bytes)}" style="max-width:110px" />
+        <button class="ghost slim" type="submit">Save default</button>
+      </form>
+      ${members.length ? `<div class="scroll"><table><thead><tr><th>Member</th><th>Used</th><th>Quota</th><th>Est. $/month</th><th>Last snapshot</th><th></th></tr></thead><tbody>
+        ${members.map((m) => {
+          const editing = state.quotaEdit === m.user_id;
+          const pct = m.quota_bytes > 0 ? Math.round((m.used_bytes / m.quota_bytes) * 100) : 0;
+          return `<tr><td>${esc(m.email)}</td>
+            <td class="mono">${fmtBytes(m.used_bytes)} <span class="s">${pct}%</span></td>
+            <td class="mono">${editing
+              ? `<form class="row tight" data-quota-form="${esc(m.user_id)}"><input name="gb" type="number" min="0" step="0.5" value="${m.quota_override != null ? gb(m.quota_bytes) : ""}" placeholder="${gb(a.default_quota_bytes)} (default)" style="max-width:120px" autofocus />
+                 <button class="ghost slim" type="submit">Save</button><button class="ghost slim" type="button" data-quota-cancel>Cancel</button></form>`
+              : `${fmtBytes(m.quota_bytes)}${m.quota_override != null ? ` <span class="pill off">custom</span>` : ""}`}</td>
+            <td class="mono">${monthly(m.est_monthly_cents)}</td>
+            <td class="mono">${esc(m.last_backup_at ? ago(m.last_backup_at) : "never")}</td>
+            <td>${editing ? "" : `<button class="linkish" data-quota-edit="${esc(m.user_id)}">edit quota</button>`}</td></tr>`;
+        }).join("")}
+      </tbody></table></div>
+      <p class="hint">Leave the box empty to follow the lab default (${gb(a.default_quota_bytes)} GB). Lowering a quota below what is used blocks new backups; it does not delete anything.</p>`
+      : `<p class="hint">No members yet.</p>`}
+    </div>`;
 }
 
 // ---------------------------------------------------------------- fleet (admin)
@@ -2453,12 +2651,79 @@ function bindView() {
   }
   for (const b of $$("[data-kill]")) {
     b.addEventListener("click", async () => {
-      if (!confirm("Terminate destroys the disk and stops billing. Continue?")) return;
+      const inst = state.instances.find((x) => x.id === b.dataset.kill);
+      const bi = inst ? backupInfo(inst) : { state: "none" };
+      if (!confirm(bi.state === "ok"
+        ? "This saves a final backup of ~/work (up to about 90 seconds), then destroys the disk and stops billing. Continue?"
+        : "Terminate destroys the disk and stops billing. This machine has no working backup, so its files will be lost. Continue?")) return;
+      b.disabled = true;
+      b.textContent = bi.state === "ok" ? "Saving files…" : "Terminating…";
       try {
         const r = await post(`/api/instances/${b.dataset.kill}/terminate`);
-        flash(r?.settled_cents != null ? `Terminated — final charge ${money(r.settled_cents)}.` : "Terminated.", "ok");
+        if (r?.state === "draining") flash("Stopping, saving files… the machine ends as soon as the final backup lands. You are not billed past that.", "ok");
+        else if (r?.backup_before_kill) flash(`Files saved, machine terminated${r.billed_cents != null ? ` — final charge ${money(r.billed_cents)}` : ""}.`, "ok");
+        else flash(r?.settled_cents != null ? `Terminated without a final backup — final charge ${money(r.settled_cents)}.` : "Terminated.", "ok");
         await refreshMe();
       } catch (err) { flash(err.message); }
+      refreshTab();
+    });
+  }
+  for (const b of $$("[data-backup-now]")) {
+    b.addEventListener("click", async () => {
+      b.disabled = true;
+      try {
+        await post(`/api/instances/${b.dataset.backupNow}/backup`);
+        flash("Backup requested. It starts at the machine's next heartbeat (within about 45 seconds).", "ok");
+      } catch (err) { flash(err.code === "no_agent" || /no_agent/.test(err.message) ? "This machine has no backup agent." : err.message); }
+      refreshTab();
+    });
+  }
+  $("#wipe-ask")?.addEventListener("click", () => { state.wipeAsk = true; paintView({ animate: false }); });
+  $("#wipe-cancel")?.addEventListener("click", () => { state.wipeAsk = false; paintView({ animate: false }); });
+  $("#wipe-go")?.addEventListener("click", async () => {
+    if (!confirm("Delete ALL your backups? This cannot be undone.")) return;
+    try {
+      const r = await api("/api/backups", { method: "DELETE" });
+      flash(`Deleted ${r.deleted_objects ?? 0} objects, freed ${fmtBytes(r.freed_bytes)}.`, "ok");
+    } catch (err) { flash(err.message); }
+    state.wipeAsk = false;
+    refreshTab();
+  });
+  $("#bk-enabled")?.addEventListener("change", async (e) => {
+    const next = e.target.checked;
+    e.target.disabled = true;
+    try {
+      await api("/api/admin/settings", { method: "PATCH", body: JSON.stringify({ backups_enabled: next }) });
+      flash(next ? "Backups are on for new machines." : "Backups are off for new machines.", "ok");
+    } catch (err) { flash(err.message); }
+    await loadSettings();
+    refreshTab();
+  });
+  $("#bk-default")?.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const n = Number(new FormData(e.target).get("gb"));
+    if (!Number.isFinite(n) || n < 0) return flash("Enter a size in GB.");
+    try {
+      await api("/api/admin/settings", { method: "PATCH", body: JSON.stringify({ backup_default_quota_bytes: Math.round(n * GIB) }) });
+      flash("Default quota saved.", "ok");
+    } catch (err) { flash(err.message); }
+    refreshTab();
+  });
+  for (const b of $$("[data-quota-edit]")) b.addEventListener("click", () => { state.quotaEdit = b.dataset.quotaEdit; paintView({ animate: false }); });
+  $("[data-quota-cancel]")?.addEventListener("click", () => { state.quotaEdit = null; paintView({ animate: false }); });
+  for (const f of $$("[data-quota-form]")) {
+    f.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const raw = String(new FormData(f).get("gb")).trim();
+      const n = Number(raw);
+      if (raw !== "" && (!Number.isFinite(n) || n < 0)) return flash("Enter a size in GB, or leave empty for the default.");
+      try {
+        await api(`/api/admin/users/${f.dataset.quotaForm}/backup-quota`, {
+          method: "PATCH", body: JSON.stringify({ quota_bytes: raw === "" ? null : Math.round(n * GIB) }),
+        });
+        flash("Quota saved.", "ok");
+      } catch (err) { flash(err.message); }
+      state.quotaEdit = null;
       refreshTab();
     });
   }
@@ -2689,7 +2954,13 @@ async function loadDetail(id) {
 let pollTimer = null;
 function schedulePoll() {
   clearTimeout(pollTimer);
-  if (!state.user || state.tab !== "home") return;
+  if (!state.user) return;
+  if (state.tab === "files") {
+    const saving = (state.backups?.machines || []).some((m) => backupInfo(m).saving);
+    pollTimer = setTimeout(() => (document.hidden ? schedulePoll() : refreshTab()), saving ? 4000 : 30000);
+    return;
+  }
+  if (state.tab !== "home") return;
   const fast = state.instances.some((i) => i.status === "launching" || (i.status === "running" && !i.ip));
   pollTimer = setTimeout(() => (document.hidden || state.launch ? schedulePoll() : refreshTab()), fast ? 4000 : 20000);
 }
@@ -2742,6 +3013,7 @@ async function refreshTab() {
         isAdmin() ? api("/api/admin/catalog") : Promise.resolve(null),
         isAdmin() ? api("/api/admin/audit") : Promise.resolve({ events: [] }),
         loadSettings(),
+        loadAdminBackups(),
       ]);
       if (stale()) return;
       state.team = team;
@@ -2750,6 +3022,9 @@ async function refreshTab() {
       state.edit = null;
     } else if (tab === "usage") {
       await Promise.all([loadUsage(), loadVmEvents()]);
+      if (stale()) return;
+    } else if (tab === "files") {
+      await loadBackups();
       if (stale()) return;
     } else if (tab === "agents") {
       const data = await api("/api/keys");
@@ -2821,10 +3096,31 @@ document.addEventListener("click", (e) => {
   $("#who")?.setAttribute("aria-expanded", "false");
 });
 
+async function tryClaim() {
+  const m = /^#claim=(.+)$/.exec(location.hash);
+  if (!m) return null;
+  // the hash never reaches the server; clear it first so a reload or shared screen cannot replay it
+  history.replaceState(null, "", location.pathname + location.search);
+  const raw = decodeURIComponent(m[1]);
+  const at = raw.lastIndexOf(":");
+  if (at < 1) return null;
+  try {
+    const data = await post("/api/auth/admin/verify", { email: raw.slice(0, at).trim(), code: raw.slice(at + 1).trim() });
+    if (data.lab) state.lab = data.lab;
+    return data;
+  } catch (err) {
+    state.flash = `Claim link failed: ${err.message}. Use the admin sign-in instead.`;
+    return null;
+  }
+}
+
 async function boot() {
   try {
+    // setup prints /app#claim=<email>:<code>; trade it for an admin session, then drop it from the URL
+    const claimed = await tryClaim(); // verified admin payload, or null
     const [me] = await Promise.all([api("/api/me"), detectCaps()]);
     state.user = me.user;
+    if (claimed) { await enter(claimed.user || me.user, { fresh: true }); return; }
     if (typeof me.mock === "boolean") state.meta.mock = me.mock;
     // the Massed OAuth round-trip comes back here as ?massed=connected|massed_error=…
     const params = new URLSearchParams(location.search);
